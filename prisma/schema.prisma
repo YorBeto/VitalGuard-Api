@@ -1,0 +1,364 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model app_profiles {
+  id         Int          @id @default(autoincrement())
+  vital_id   String       @db.Uuid
+  role_id    Int
+  is_active  Boolean?     @default(true)
+  created_at DateTime?    @default(now()) @db.Timestamp(6)
+  updated_at DateTime?    @default(now()) @db.Timestamp(6)
+  deleted_at DateTime?    @db.Timestamp(6)
+  roles      roles        @relation(fields: [role_id], references: [id], onUpdate: NoAction)
+  caregivers caregivers?
+  doctors    doctors?
+  patient_ap patient_ap[]
+  treatments treatments[]
+
+  @@unique([vital_id, role_id])
+  @@index([id], map: "idx_app_profiles_active", where: raw("(deleted_at IS NULL)"))
+  @@index([role_id], map: "idx_app_profiles_role")
+  @@index([vital_id], map: "idx_app_profiles_vital_id")
+}
+
+model caregiver_patient {
+  caregiver_id Int
+  patient_id   Int
+  kinship      kinship_type?
+  created_at   DateTime?     @default(now()) @db.Timestamp(6)
+  updated_at   DateTime?     @default(now()) @db.Timestamp(6)
+  deleted_at   DateTime?     @db.Timestamp(6)
+  caregivers   caregivers    @relation(fields: [caregiver_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patients     patients      @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([caregiver_id, patient_id])
+  @@index([caregiver_id, patient_id], map: "idx_caregiver_patient_active", where: raw("(deleted_at IS NULL)"))
+  @@index([caregiver_id], map: "idx_caregiver_patient_caregiver")
+  @@index([patient_id], map: "idx_caregiver_patient_patient")
+}
+
+model caregivers {
+  id                      Int                 @id @default(autoincrement())
+  app_profile_id          Int                 @unique
+  emergency_call_priority Int?                @default(1) @db.SmallInt
+  created_at              DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at              DateTime?           @default(now()) @db.Timestamp(6)
+  deleted_at              DateTime?           @db.Timestamp(6)
+  caregiver_patient       caregiver_patient[]
+  app_profiles            app_profiles        @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  devices                 devices[]
+  sos_events              sos_events[]
+  voice_messages          voice_messages[]
+
+  @@index([id], map: "idx_caregivers_active", where: raw("(deleted_at IS NULL)"))
+  @@index([app_profile_id], map: "idx_caregivers_app_profile")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model device_compartments {
+  id                 Int                 @id @default(autoincrement())
+  device_id          Int
+  compartment_number Int                 @db.SmallInt
+  status             compartment_status? @default(closed)
+  created_at         DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?           @default(now()) @db.Timestamp(6)
+  deleted_at         DateTime?           @db.Timestamp(6)
+  devices            devices             @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([device_id, compartment_number])
+  @@unique([device_id, compartment_number], map: "idx_unique_active_compartment", where: raw("(deleted_at IS NULL)"))
+  @@index([id], map: "idx_device_compartments_active", where: raw("(deleted_at IS NULL)"))
+  @@index([device_id], map: "idx_device_compartments_device")
+}
+
+model devices {
+  id                       Int                   @id @default(autoincrement())
+  unique_code              String                @unique @db.VarChar(7)
+  patient_id               Int?                  @unique
+  responsible_caregiver_id Int?
+  is_online                Boolean?              @default(false)
+  last_sync_at             DateTime?             @db.Timestamp(6)
+  firmware_version         String?               @db.VarChar(20)
+  created_at               DateTime?             @default(now()) @db.Timestamp(6)
+  updated_at               DateTime?             @default(now()) @db.Timestamp(6)
+  deleted_at               DateTime?             @db.Timestamp(6)
+  device_compartments      device_compartments[]
+  patients                 patients?             @relation(fields: [patient_id], references: [id], onUpdate: NoAction)
+  caregivers               caregivers?           @relation(fields: [responsible_caregiver_id], references: [id], onUpdate: NoAction)
+  sos_events               sos_events[]
+
+  @@index([id], map: "idx_devices_active", where: raw("(deleted_at IS NULL)"))
+  @@index([responsible_caregiver_id], map: "idx_devices_caregiver")
+  @@index([patient_id], map: "idx_devices_patient")
+}
+
+model doctor_patient {
+  doctor_id  Int
+  patient_id Int
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  updated_at DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at DateTime? @db.Timestamp(6)
+  doctors    doctors   @relation(fields: [doctor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patients   patients  @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([doctor_id, patient_id])
+  @@index([doctor_id, patient_id], map: "idx_doctor_patient_active", where: raw("(deleted_at IS NULL)"))
+  @@index([doctor_id], map: "idx_doctor_patient_doctor")
+  @@index([patient_id], map: "idx_doctor_patient_patient")
+}
+
+model doctors {
+  id              Int              @id @default(autoincrement())
+  app_profile_id  Int              @unique
+  specialty       String           @db.VarChar(50)
+  medical_license String           @unique @db.VarChar(20)
+  created_at      DateTime?        @default(now()) @db.Timestamp(6)
+  updated_at      DateTime?        @default(now()) @db.Timestamp(6)
+  deleted_at      DateTime?        @db.Timestamp(6)
+  doctor_patient  doctor_patient[]
+  app_profiles    app_profiles     @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "idx_doctors_active", where: raw("(deleted_at IS NULL)"))
+  @@index([app_profile_id], map: "idx_doctors_app_profile")
+}
+
+model medication_logs {
+  id                    Int         @id @default(autoincrement())
+  schedule_id           Int
+  scheduled_datetime    DateTime    @db.Timestamp(6)
+  actual_taken_datetime DateTime?   @db.Timestamp(6)
+  status                log_status? @default(Pendiente)
+  voice_confirmed       Boolean?    @default(false)
+  created_at            DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at            DateTime?   @default(now()) @db.Timestamp(6)
+  deleted_at            DateTime?   @db.Timestamp(6)
+  schedules             schedules   @relation(fields: [schedule_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "idx_medication_logs_active", where: raw("(deleted_at IS NULL)"))
+  @@index([scheduled_datetime], map: "idx_medication_logs_datetime")
+  @@index([schedule_id], map: "idx_medication_logs_schedule")
+  @@index([status], map: "idx_medication_logs_status")
+}
+
+model medications {
+  id                Int                 @id @default(autoincrement())
+  name              String              @db.VarChar(40)
+  presentation      String?             @db.VarChar(50)
+  created_at        DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?           @default(now()) @db.Timestamp(6)
+  deleted_at        DateTime?           @db.Timestamp(6)
+  treatment_details treatment_details[]
+
+  @@index([id], map: "idx_medications_active", where: raw("(deleted_at IS NULL)"))
+}
+
+model patient_ap {
+  app_profile_id Int
+  patient_id     Int
+  created_at     DateTime?    @default(now()) @db.Timestamp(6)
+  updated_at     DateTime?    @default(now()) @db.Timestamp(6)
+  deleted_at     DateTime?    @db.Timestamp(6)
+  app_profiles   app_profiles @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patients       patients     @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([app_profile_id, patient_id])
+  @@index([app_profile_id, patient_id], map: "idx_patient_ap_active", where: raw("(deleted_at IS NULL)"))
+  @@index([patient_id], map: "idx_patient_ap_patient")
+  @@index([app_profile_id], map: "idx_patient_ap_profile")
+}
+
+model patients {
+  id                 Int                 @id @default(autoincrement())
+  first_name         String              @db.VarChar(50)
+  paternal_last_name String              @db.VarChar(25)
+  maternal_last_name String?             @db.VarChar(25)
+  birth_date         DateTime            @db.Date
+  gender             gender_type
+  phone              String?             @db.VarChar(10)
+  address            String?             @db.VarChar(100)
+  blood_type         blood_type?
+  medical_notes      String?
+  created_at         DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?           @default(now()) @db.Timestamp(6)
+  deleted_at         DateTime?           @db.Timestamp(6)
+  caregiver_patient  caregiver_patient[]
+  devices            devices?
+  doctor_patient     doctor_patient[]
+  patient_ap         patient_ap[]
+  sos_events         sos_events[]
+  treatments         treatments[]
+  voice_messages     voice_messages[]
+
+  @@index([id], map: "idx_patients_active", where: raw("(deleted_at IS NULL)"))
+}
+
+model roles {
+  id           Int            @id @default(autoincrement())
+  name         String         @unique @db.VarChar(20)
+  app_name     app_name
+  is_system    Boolean?       @default(false)
+  created_at   DateTime?      @default(now()) @db.Timestamp(6)
+  updated_at   DateTime?      @default(now()) @db.Timestamp(6)
+  deleted_at   DateTime?      @db.Timestamp(6)
+  app_profiles app_profiles[]
+
+  @@index([id], map: "idx_roles_active", where: raw("(deleted_at IS NULL)"))
+  @@index([app_name], map: "idx_roles_app_name")
+}
+
+model schedules {
+  id                  Int               @id @default(autoincrement())
+  treatment_detail_id Int
+  time_of_day         DateTime          @db.Time(6)
+  created_at          DateTime?         @default(now()) @db.Timestamp(6)
+  updated_at          DateTime?         @default(now()) @db.Timestamp(6)
+  deleted_at          DateTime?         @db.Timestamp(6)
+  medication_logs     medication_logs[]
+  treatment_details   treatment_details @relation(fields: [treatment_detail_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "idx_schedules_active", where: raw("(deleted_at IS NULL)"))
+  @@index([treatment_detail_id], map: "idx_schedules_detail")
+}
+
+model sos_events {
+  id                     Int         @id @default(autoincrement())
+  patient_id             Int
+  device_id              Int?
+  status                 sos_status? @default(Activo)
+  resolving_caregiver_id Int?
+  created_at             DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at             DateTime?   @default(now()) @db.Timestamp(6)
+  devices                devices?    @relation(fields: [device_id], references: [id], onUpdate: NoAction)
+  patients               patients    @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caregivers             caregivers? @relation(fields: [resolving_caregiver_id], references: [id], onUpdate: NoAction)
+
+  @@index([resolving_caregiver_id], map: "idx_sos_events_caregiver")
+  @@index([device_id], map: "idx_sos_events_device")
+  @@index([patient_id], map: "idx_sos_events_patient")
+  @@index([status], map: "idx_sos_events_status")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model treatment_details {
+  id                 Int                @id @default(autoincrement())
+  treatment_id       Int
+  medication_id      Int
+  dose_info          String?            @db.VarChar(50)
+  frequency_hours    Int?               @default(1) @db.SmallInt
+  first_take_time    DateTime           @db.Time(6)
+  end_date           DateTime?          @db.Date
+  status             medication_status? @default(En_curso)
+  compartment_number Int?               @db.SmallInt
+  is_external        Boolean?           @default(false)
+  created_at         DateTime?          @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?          @default(now()) @db.Timestamp(6)
+  deleted_at         DateTime?          @db.Timestamp(6)
+  schedules          schedules[]
+  medications        medications        @relation(fields: [medication_id], references: [id], onUpdate: NoAction)
+  treatments         treatments         @relation(fields: [treatment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "idx_treatment_details_active", where: raw("(deleted_at IS NULL)"))
+  @@index([medication_id], map: "idx_treatment_details_medication")
+  @@index([treatment_id], map: "idx_treatment_details_treatment")
+}
+
+model treatments {
+  id                Int                 @id @default(autoincrement())
+  patient_id        Int
+  app_profile_id    Int?
+  start_date        DateTime            @db.Date
+  end_date          DateTime?           @db.Date
+  status            treatment_status?   @default(Activo)
+  created_at        DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?           @default(now()) @db.Timestamp(6)
+  deleted_at        DateTime?           @db.Timestamp(6)
+  treatment_details treatment_details[]
+  app_profiles      app_profiles?       @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patients          patients            @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "idx_treatments_active", where: raw("(deleted_at IS NULL)"))
+  @@index([app_profile_id], map: "idx_treatments_app_profile")
+  @@index([patient_id], map: "idx_treatments_patient")
+}
+
+model voice_messages {
+  id                  Int        @id @default(autoincrement())
+  sender_caregiver_id Int
+  patient_id          Int
+  audio_file_path     String     @db.VarChar(255)
+  is_played           Boolean?   @default(false)
+  created_at          DateTime?  @default(now()) @db.Timestamp(6)
+  updated_at          DateTime?  @default(now()) @db.Timestamp(6)
+  patients            patients   @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caregivers          caregivers @relation(fields: [sender_caregiver_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([patient_id], map: "idx_voice_messages_patient")
+  @@index([sender_caregiver_id], map: "idx_voice_messages_sender")
+}
+
+enum app_name {
+  MOBILE
+  WEB
+  IOT
+}
+
+enum blood_type {
+  A_POSITIVE  @map("A+")
+  A_NEGATIVE  @map("A-")
+  B_POSITIVE  @map("B+")
+  B_NEGATIVE  @map("B-")
+  AB_POSITIVE @map("AB+")
+  AB_NEGATIVE @map("AB-")
+  O_POSITIVE  @map("O+")
+  O_NEGATIVE  @map("O-")
+}
+
+enum compartment_status {
+  closed
+  open
+}
+
+enum gender_type {
+  M
+  F
+}
+
+enum kinship_type {
+  Madre
+  Padre
+  Hijo_a   @map("Hijo/a")
+  Abuelo_a @map("Abuelo/a")
+  Esposo_a @map("Esposo/a")
+  Cuidador
+  Otro
+}
+
+enum log_status {
+  Pendiente
+  Confirmado
+  Retraso
+  Omitida
+}
+
+enum medication_status {
+  En_curso   @map("En curso")
+  Finalizado
+}
+
+enum sos_status {
+  Activo
+  Atendido
+  Falsa_Alarma @map("Falsa Alarma")
+}
+
+enum treatment_status {
+  Activo
+  Pausado
+  Finalizado
+}

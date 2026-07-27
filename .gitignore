@@ -1,0 +1,82 @@
+# Compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# AI / Coding Assistants (Windsurf, Claude, Cursor, etc.)
+.claude/
+.windsurf/
+.agents/
+.specstory/
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Prisma & Databases
+*.db
+*.sqlite
+/prisma/client
+
+# Prisma generated client (Evita subir los tipos autogenerados a Git)
+src/generated/prisma/
+
+# TypeScript / NestJS build cache & TSBuildInfo
+*.tsbuildinfo
+
+# OS local files
+*.swp
+*.swo
+
+# Temporary swap files or lockfiles not needed
+.yarn-integrity
+
+# Operating System temporary files
+*.tmp
