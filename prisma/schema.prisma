@@ -8,18 +8,18 @@ datasource db {
 }
 
 model app_profiles {
-  id         Int          @id @default(autoincrement())
-  vital_id   String       @db.Uuid
-  role_id    Int
-  is_active  Boolean?     @default(true)
-  created_at DateTime?    @default(now()) @db.Timestamp(6)
-  updated_at DateTime?    @default(now()) @db.Timestamp(6)
-  deleted_at DateTime?    @db.Timestamp(6)
-  roles      roles        @relation(fields: [role_id], references: [id], onUpdate: NoAction)
-  caregivers caregivers?
-  doctors    doctors?
-  patient_ap patient_ap[]
-  treatments treatments[]
+  id            Int             @id @default(autoincrement())
+  vital_id      String          @db.Uuid
+  role_id       Int
+  is_active     Boolean?        @default(true)
+  created_at    DateTime?       @default(now()) @db.Timestamp(6)
+  updated_at    DateTime?       @default(now()) @db.Timestamp(6)
+  deleted_at    DateTime?       @db.Timestamp(6)
+  roles         roles           @relation(fields: [role_id], references: [id], onUpdate: NoAction)
+  caregivers    caregivers?
+  doctors       doctors?
+  treatments    treatments[]
+  notifications notifications[] // <-- AÑADIDO (Relación inversa con notifications)
 
   @@unique([vital_id, role_id])
   @@index([id], map: "idx_app_profiles_active", where: raw("(deleted_at IS NULL)"))
@@ -60,7 +60,6 @@ model caregivers {
   @@index([app_profile_id], map: "idx_caregivers_app_profile")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model device_compartments {
   id                 Int                 @id @default(autoincrement())
   device_id          Int
@@ -158,21 +157,6 @@ model medications {
   @@index([id], map: "idx_medications_active", where: raw("(deleted_at IS NULL)"))
 }
 
-model patient_ap {
-  app_profile_id Int
-  patient_id     Int
-  created_at     DateTime?    @default(now()) @db.Timestamp(6)
-  updated_at     DateTime?    @default(now()) @db.Timestamp(6)
-  deleted_at     DateTime?    @db.Timestamp(6)
-  app_profiles   app_profiles @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  patients       patients     @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@id([app_profile_id, patient_id])
-  @@index([app_profile_id, patient_id], map: "idx_patient_ap_active", where: raw("(deleted_at IS NULL)"))
-  @@index([patient_id], map: "idx_patient_ap_patient")
-  @@index([app_profile_id], map: "idx_patient_ap_profile")
-}
-
 model patients {
   id                 Int                 @id @default(autoincrement())
   first_name         String              @db.VarChar(50)
@@ -190,10 +174,10 @@ model patients {
   caregiver_patient  caregiver_patient[]
   devices            devices?
   doctor_patient     doctor_patient[]
-  patient_ap         patient_ap[]
   sos_events         sos_events[]
   treatments         treatments[]
   voice_messages     voice_messages[]
+  notifications      notifications[]     // <-- AÑADIDO (Relación inversa con notifications)
 
   @@index([id], map: "idx_patients_active", where: raw("(deleted_at IS NULL)"))
 }
@@ -244,7 +228,6 @@ model sos_events {
   @@index([status], map: "idx_sos_events_status")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model treatment_details {
   id                 Int                @id @default(autoincrement())
   treatment_id       Int
@@ -269,18 +252,18 @@ model treatment_details {
 }
 
 model treatments {
-  id                Int                 @id @default(autoincrement())
+  id                Int               @id @default(autoincrement())
   patient_id        Int
   app_profile_id    Int?
-  start_date        DateTime            @db.Date
-  end_date          DateTime?           @db.Date
-  status            treatment_status?   @default(Activo)
-  created_at        DateTime?           @default(now()) @db.Timestamp(6)
-  updated_at        DateTime?           @default(now()) @db.Timestamp(6)
-  deleted_at        DateTime?           @db.Timestamp(6)
+  start_date        DateTime          @db.Date
+  end_date          DateTime?         @db.Date
+  status            treatment_status? @default(Activo)
+  created_at        DateTime?         @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?         @default(now()) @db.Timestamp(6)
+  deleted_at        DateTime?         @db.Timestamp(6)
   treatment_details treatment_details[]
-  app_profiles      app_profiles?       @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  patients          patients            @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  app_profiles      app_profiles?     @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patients          patients          @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([id], map: "idx_treatments_active", where: raw("(deleted_at IS NULL)"))
   @@index([app_profile_id], map: "idx_treatments_app_profile")
@@ -300,6 +283,34 @@ model voice_messages {
 
   @@index([patient_id], map: "idx_voice_messages_patient")
   @@index([sender_caregiver_id], map: "idx_voice_messages_sender")
+}
+
+model notifications {
+  id             Int               @id @default(autoincrement())
+  app_profile_id Int
+  patient_id     Int?
+  title          String            @db.VarChar(100)
+  message        String            @db.VarChar(255)
+  type           notification_type @default(SISTEMA)
+  is_read        Boolean?          @default(false)
+  metadata       Json?
+  created_at     DateTime?         @default(now()) @db.Timestamp(6)
+  updated_at     DateTime?         @default(now()) @db.Timestamp(6)
+  deleted_at     DateTime?         @db.Timestamp(6)
+
+  app_profiles app_profiles @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patients     patients?    @relation(fields: [patient_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([app_profile_id], map: "idx_notifications_profile")
+  @@index([patient_id], map: "idx_notifications_patient")
+  @@index([is_read], map: "idx_notifications_unread")
+}
+
+enum notification_type {
+  MEDICAMENTO_SOLICITUD
+  DOSIS_RECORDATORIO
+  SOS_ALERTA
+  SISTEMA
 }
 
 enum app_name {
