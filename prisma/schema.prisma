@@ -19,7 +19,7 @@ model app_profiles {
   caregivers    caregivers?
   doctors       doctors?
   treatments    treatments[]
-  notifications notifications[] // <-- AÑADIDO (Relación inversa con notifications)
+  notifications notifications[]
 
   @@unique([vital_id, role_id])
   @@index([id], map: "idx_app_profiles_active", where: raw("(deleted_at IS NULL)"))
@@ -44,17 +44,17 @@ model caregiver_patient {
 }
 
 model caregivers {
-  id                      Int                 @id @default(autoincrement())
-  app_profile_id          Int                 @unique
-  emergency_call_priority Int?                @default(1) @db.SmallInt
-  created_at              DateTime?           @default(now()) @db.Timestamp(6)
-  updated_at              DateTime?           @default(now()) @db.Timestamp(6)
-  deleted_at              DateTime?           @db.Timestamp(6)
-  caregiver_patient       caregiver_patient[]
-  app_profiles            app_profiles        @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  devices                 devices[]
-  sos_events              sos_events[]
-  voice_messages          voice_messages[]
+  id                        Int                 @id @default(autoincrement())
+  app_profile_id            Int                 @unique
+  emergency_call_priority   Int?                @default(1) @db.SmallInt
+  created_at                DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at                DateTime?           @default(now()) @db.Timestamp(6)
+  deleted_at                DateTime?           @db.Timestamp(6)
+  caregiver_patient         caregiver_patient[]
+  app_profiles              app_profiles        @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  devices                   devices[]
+  sos_events                sos_events[]
+  voice_messages            voice_messages[]
 
   @@index([id], map: "idx_caregivers_active", where: raw("(deleted_at IS NULL)"))
   @@index([app_profile_id], map: "idx_caregivers_app_profile")
@@ -177,7 +177,7 @@ model patients {
   sos_events         sos_events[]
   treatments         treatments[]
   voice_messages     voice_messages[]
-  notifications      notifications[]     // <-- AÑADIDO (Relación inversa con notifications)
+  notifications      notifications[]
 
   @@index([id], map: "idx_patients_active", where: raw("(deleted_at IS NULL)"))
 }
@@ -253,18 +253,18 @@ model treatment_details {
 }
 
 model treatments {
-  id                Int               @id @default(autoincrement())
+  id                Int                @id @default(autoincrement())
   patient_id        Int
   app_profile_id    Int?
-  start_date        DateTime          @db.Date
-  end_date          DateTime?         @db.Date
-  status            treatment_status? @default(Activo)
-  created_at        DateTime?         @default(now()) @db.Timestamp(6)
-  updated_at        DateTime?         @default(now()) @db.Timestamp(6)
-  deleted_at        DateTime?         @db.Timestamp(6)
+  start_date        DateTime           @db.Date
+  end_date          DateTime?          @db.Date
+  status            treatment_status?  @default(Activo)
+  created_at        DateTime?          @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?          @default(now()) @db.Timestamp(6)
+  deleted_at        DateTime?          @db.Timestamp(6)
   treatment_details treatment_details[]
-  app_profiles      app_profiles?     @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  patients          patients          @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  app_profiles      app_profiles?      @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patients          patients           @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([id], map: "idx_treatments_active", where: raw("(deleted_at IS NULL)"))
   @@index([app_profile_id], map: "idx_treatments_app_profile")
@@ -272,15 +272,15 @@ model treatments {
 }
 
 model voice_messages {
-  id                  Int        @id @default(autoincrement())
+  id                  Int       @id @default(autoincrement())
   sender_caregiver_id Int
   patient_id          Int
-  audio_file_path     String     @db.VarChar(255)
-  is_played           Boolean?   @default(false)
-  created_at          DateTime?  @default(now()) @db.Timestamp(6)
-  updated_at          DateTime?  @default(now()) @db.Timestamp(6)
-    deleted_at        DateTime?  @db.Timestamp(6)
-  patients            patients   @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  audio_file_path     String    @db.VarChar(255)
+  is_played           Boolean?  @default(false)
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at          DateTime? @db.Timestamp(6)
+  patients            patients  @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   caregivers          caregivers @relation(fields: [sender_caregiver_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([patient_id], map: "idx_voice_messages_patient")
@@ -300,8 +300,8 @@ model notifications {
   updated_at     DateTime?         @default(now()) @db.Timestamp(6)
   deleted_at     DateTime?         @db.Timestamp(6)
 
-  app_profiles app_profiles @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  patients     patients?    @relation(fields: [patient_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  app_profiles   app_profiles      @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patients       patients?         @relation(fields: [patient_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@index([app_profile_id], map: "idx_notifications_profile")
   @@index([patient_id], map: "idx_notifications_patient")

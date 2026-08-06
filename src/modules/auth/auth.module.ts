@@ -10,7 +10,10 @@ import { JwtStrategy } from '../../common/strategies/jwt.strategy';
   imports: [
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'secreto_vital_id_compartido',
+      secret:
+        process.env.JWT_SECRET ||
+        'c16f28b5fc222a4700fe9e5caaa3e3c2936cc68cb70f248aada34b75fd8c35d9',
+      signOptions: { expiresIn: '15m' },
     }),
   ],
   controllers: [AuthController],
