@@ -7,7 +7,7 @@ export class VoiceMessagesService {
 
   async findByPatient(patientId: number) {
     return this.prisma.voice_messages.findMany({
-      where: { patient_id: patientId, deleted_at: null },
+      where: { patient_id: patientId },
       orderBy: { created_at: 'desc' },
     });
   }
