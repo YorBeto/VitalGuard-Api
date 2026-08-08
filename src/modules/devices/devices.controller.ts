@@ -1,68 +1,119 @@
-import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiBody,
+} from '@nestjs/swagger';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { DevicesService } from './devices.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { LinkDeviceDto } from './dto/link-device.dto';
+import { SendCommandDto } from './dto/device-command.dto';
 
+@ApiTags('Devices (Dispositivos)')
 @Controller('devices')
 export class DevicesController {
   constructor(private readonly devicesService: DevicesService) {}
 
-  // ==========================================
-  // METODOS HTTP REST (Para la App Móvil y Fallback)
-  // ==========================================
+  // ═══════════════════════════════════════════════════════════
+  // HTTP REST (App Móvil)
+  // ═══════════════════════════════════════════════════════════
 
   @UseGuards(JwtAuthGuard)
   @Get('patient/:patientId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Obtener dispositivo de un paciente' })
+  @ApiResponse({ status: 200, description: 'Dispositivo encontrado' })
   async findByPatient(@Param('patientId') patientId: string) {
     return this.devicesService.findByPatient(+patientId);
   }
 
   @Post('auto-register')
+  @ApiOperation({ summary: 'Auto-registro de dispositivo ESP32' })
+  @ApiResponse({ status: 201, description: 'Dispositivo registrado/actualizado' })
   async autoRegister(@Body() dto: RegisterDeviceDto) {
     return this.devicesService.upsertFromEsp32(dto);
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('vincular')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Vincular dispositivo a un paciente',
+    description:
+      'Asigna el patient_id y responsible_caregiver_id al dispositivo. Después envía la config por MQTT.',
+  })
+  @ApiBody({ type: LinkDeviceDto })
+  @ApiResponse({ status: 200, description: 'Dispositivo vinculado y config enviada' })
+  @ApiResponse({ status: 404, description: 'Dispositivo no encontrado' })
   async linkDevice(@Body() dto: LinkDeviceDto) {
     const result = await this.devicesService.linkToPatient(dto);
-    return {
-      vinculado: true,
-      device: result,
-    };
+    return { vinculado: true, device: result };
   }
-  // ==========================================
-  // LISTENERS MQTT (Para el ESP32)
-  // ==========================================
 
-  /**
-   * Escucha: vitalguard/+/registro
-   * Payload: {"deviceId":"00LNX1", "firmwareVersion":"1.0.0"}
-   */
+  @UseGuards(JwtAuthGuard)
+  @Post('command')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Enviar comando MQTT a un dispositivo',
+    description: 'Envía una acción al ESP32 (ALARMA_TOMA, CANCELAR_SOS, etc.)',
+  })
+  @ApiBody({ type: SendCommandDto })
+  @ApiResponse({ status: 200, description: 'Comando enviado' })
+  async sendCommand(@Body() dto: SendCommandDto) {
+    await this.devicesService.sendCommand(dto.deviceId, dto.accion, dto.payload);
+    return { enviado: true, deviceId: dto.deviceId, accion: dto.accion };
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // MQTT LISTENERS (ESP32 → Backend)
+  // ═══════════════════════════════════════════════════════════
+
   @MessagePattern('vitalguard/+/registro')
   async handleMqttRegister(@Payload() dto: RegisterDeviceDto) {
-    console.log('📩 [MQTT Register]: Registrando dispositivo...', dto);
+    this.logger(`📩 [MQTT Register]: ${dto.deviceId}`);
     return this.devicesService.upsertFromEsp32(dto);
   }
 
-  /**
-   * Escucha: vitalguard/+/status
-   * Payload: {"deviceId":"00LNX1", "wifi":true}
-   */
   @MessagePattern('vitalguard/+/status')
   async handleMqttStatus(@Payload() data: { deviceId: string; wifi: boolean }) {
-    console.log(`💓 [MQTT Heartbeat] ${data.deviceId}: Online=${data.wifi}`);
+    this.logger(`💓 [MQTT Status] ${data.deviceId}: Online=${data.wifi}`);
     return this.devicesService.updateStatus(data.deviceId, data.wifi);
   }
 
-  /**
-   * Escucha: vitalguard/+/evento
-   * Payload: {"tipo":"DEVICE_ONLINE", "deviceId":"00LNX1", ...}
-   */
   @MessagePattern('vitalguard/+/evento')
-  async handleMqttEvent(@Payload() data: { tipo: string; deviceId: string; detalle?: string }) {
-    console.log(`📌 [MQTT Evento] ${data.deviceId}: ${data.tipo}`);
+  async handleMqttEvent(
+    @Payload() data: { tipo: string; deviceId: string; timestamp?: string },
+  ) {
+    this.logger(`📌 [MQTT Evento] ${data.deviceId}: ${data.tipo}`);
+
+    if (data.tipo === 'TOMA_CONFIRMADA') {
+      await this.devicesService.handleTomaConfirmada(data.deviceId);
+    }
+  }
+
+  @MessagePattern('vitalguard/+/alerta')
+  async handleMqttAlert(
+    @Payload() data: { tipo: string; deviceId: string; timestamp?: string },
+  ) {
+    this.logger(`🚨 [MQTT Alerta] ${data.deviceId}: ${data.tipo}`);
+
+    if (data.tipo === 'SOS') {
+      await this.devicesService.handleSosAlert(data.deviceId);
+    }
+  }
+
+  private logger(msg: string) {
+    console.log(`[DevicesController] ${msg}`);
   }
 }

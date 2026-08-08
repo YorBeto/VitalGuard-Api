@@ -1,10 +1,20 @@
-// src/modules/auth/auth.service.ts
 import { Injectable } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+  ) {}
+
+  async devLogin(vitalId?: string) {
+    const id = vitalId || randomUUID();
+    const token = this.jwtService.sign({ sub: id, email: 'dev@vitalguard.local' });
+    return { token, vitalId: id };
+  }
 
   async checkUserStatus(vitalId: string) {
     // Buscar si el usuario ya tiene un app_profile registrado en VitalGuard

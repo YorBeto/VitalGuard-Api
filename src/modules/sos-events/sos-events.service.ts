@@ -7,7 +7,7 @@ export class SosEventsService {
 
   async findActive(patientId: number) {
     return this.prisma.sos_events.findMany({
-      where: { patient_id: patientId, status: 'Activo', deleted_at: null },
+      where: { patient_id: patientId, status: 'Activo' },
     });
   }
 
