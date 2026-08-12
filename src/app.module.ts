@@ -15,6 +15,8 @@ import { MedicationsModule } from './modules/medications/medications.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { TreatmentDetailsModule } from './modules/treatment-details/treatment-details.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
+import { AlexaModule } from './modules/alexa/alexa.module';
+import { AiModule } from './modules/ai/ai.module';
 
 @Module({
   imports: [
@@ -34,8 +36,9 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     MedicationsModule,
     NotificationsModule,
     SchedulerModule,
+    AlexaModule,
+    AiModule,
   ],
   controllers: [],
-  providers: [],
 })
 export class AppModule {}

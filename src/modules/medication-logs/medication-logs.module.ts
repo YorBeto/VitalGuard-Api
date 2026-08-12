@@ -5,5 +5,6 @@ import { MedicationLogsController } from './medication-logs.controller';
 @Module({
   providers: [MedicationLogsService],
   controllers: [MedicationLogsController],
+  exports: [MedicationLogsService],
 })
 export class MedicationLogsModule {}
