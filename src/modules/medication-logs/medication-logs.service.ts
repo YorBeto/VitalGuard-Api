@@ -77,7 +77,11 @@ export class MedicationLogsService {
       data: {
         schedule_id: dto.scheduleId,
         scheduled_datetime: new Date(dto.scheduledDatetime),
-        status: 'Pendiente',
+        actual_taken_datetime: dto.actualTakenDatetime
+          ? new Date(dto.actualTakenDatetime)
+          : null,
+        status: dto.status ?? 'Pendiente',
+        voice_confirmed: dto.voiceConfirmed ?? false,
       },
     });
   }

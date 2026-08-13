@@ -14,7 +14,10 @@ export class TreatmentsService {
           where: { deleted_at: null },
           include: {
             medications: true,
-            schedules: { where: { deleted_at: null } },
+            schedules: {
+              where: { deleted_at: null },
+              include: { medication_logs: { where: { deleted_at: null } } },
+            },
           },
         },
       },
@@ -29,7 +32,10 @@ export class TreatmentsService {
           where: { deleted_at: null },
           include: {
             medications: true,
-            schedules: { where: { deleted_at: null } },
+            schedules: {
+              where: { deleted_at: null },
+              include: { medication_logs: { where: { deleted_at: null } } },
+            },
           },
         },
       },
