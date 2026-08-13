@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsDateString,
+  IsEnum,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -8,15 +10,20 @@ import {
   Max,
   Min,
 } from 'class-validator';
+import { medication_status } from '@prisma/client';
 
 export class CreateTreatmentDetailDto {
   @ApiProperty({ example: 1, description: 'ID del tratamiento' })
   @IsInt()
+  @Min(1)
+  @Max(2147483647)
   @IsNotEmpty({ message: 'El ID del tratamiento es obligatorio' })
   treatmentId!: number;
 
   @ApiProperty({ example: 1, description: 'ID del medicamento' })
   @IsInt()
+  @Min(1)
+  @Max(2147483647)
   @IsNotEmpty({ message: 'El ID del medicamento es obligatorio' })
   medicationId!: number;
 
@@ -36,6 +43,20 @@ export class CreateTreatmentDetailDto {
   @IsString()
   @IsNotEmpty({ message: 'La hora de primera toma es obligatoria' })
   firstTakeTime!: string;
+
+  @ApiPropertyOptional({ example: '2026-12-31', description: 'Fecha de fin (ISO date)' })
+  @IsDateString()
+  @IsOptional()
+  endDate?: string;
+
+  @ApiPropertyOptional({
+    enum: medication_status,
+    example: 'En_curso',
+    description: 'Estado del detalle del tratamiento',
+  })
+  @IsEnum(medication_status)
+  @IsOptional()
+  status?: medication_status;
 
   @ApiPropertyOptional({ example: 1, description: 'Número de compartimento del dispositivo' })
   @IsInt()

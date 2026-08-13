@@ -5,12 +5,16 @@ import {
   IsInt,
   IsNotEmpty,
   IsOptional,
+  Max,
+  Min,
 } from 'class-validator';
 import { treatment_status } from '@prisma/client';
 
 export class CreateTreatmentDto {
   @ApiProperty({ example: 1, description: 'ID del paciente' })
   @IsInt()
+  @Min(1)
+  @Max(2147483647)
   @IsNotEmpty({ message: 'El ID del paciente es obligatorio' })
   patientId!: number;
 
