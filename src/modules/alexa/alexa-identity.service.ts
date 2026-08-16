@@ -35,7 +35,9 @@ export class AlexaIdentityService {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const res = await fetch(`${this.baseUrl}/oauth/userinfo`, {
+      const url = `${this.baseUrl}/oauth/userinfo`;
+      console.log(`[Alexa] GET ${url}`);
+      const res = await fetch(url, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -44,7 +46,10 @@ export class AlexaIdentityService {
         signal: controller.signal,
       });
 
+      console.log(`[Alexa] userinfo -> status ${res.status}`);
+
       if (res.status === 401 || res.status === 403) {
+        console.warn('[Alexa] userinfo 401/403 -> token inválido/revocado');
         throw new UnauthorizedException({
           code: 'B8',
           message:
@@ -54,6 +59,7 @@ export class AlexaIdentityService {
       }
 
       if (!res.ok) {
+        console.warn(`[Alexa] userinfo status ${res.status} -> no se pudo verificar`);
         throw new UnauthorizedException({
           code: 'B8',
           message:
@@ -63,7 +69,9 @@ export class AlexaIdentityService {
       }
 
       const data = (await res.json()) as { sub?: string };
+      console.log(`[Alexa] userinfo body keys: ${Object.keys(data).join(', ')}`);
       if (!data?.sub) {
+        console.warn('[Alexa] userinfo sin "sub" en la respuesta');
         throw new UnauthorizedException({
           code: 'B8',
           message: 'La respuesta de identidad no contiene un identificador válido.',

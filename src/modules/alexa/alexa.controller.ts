@@ -26,15 +26,22 @@ export class AlexaController {
     const skillId = body?.context?.System?.application?.applicationId;
     const allowed = process.env.ALEXA_SKILL_ID;
 
+    console.log(`[Alexa] Request recibido. ApplicationId="${skillId}"`);
+
     if (allowed) {
       const norm = (s: string) => s.trim().toLowerCase();
       if (!skillId || norm(skillId) !== norm(allowed)) {
+        console.warn(
+          `[Alexa] B2 -> Skill ID rechazado. Recibido="${skillId}" esperado="${allowed}"`,
+        );
         throw new ForbiddenException({
           code: 'B2',
           message: 'ApplicationId de la Skill no autorizado',
           error: 'Forbidden',
         });
       }
+    } else {
+      console.warn('[Alexa] ALEXA_SKILL_ID vacío -> validación de Skill desactivada');
     }
 
     return this.alexaService.handle(body);
