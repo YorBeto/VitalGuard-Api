@@ -38,9 +38,10 @@ export class TreatmentDetailsService {
         dose_info: dto.doseInfo ?? null,
         frequency_hours: dto.frequencyHours ?? 1,
         first_take_time: new Date(`1970-01-01T${dto.firstTakeTime}`),
+        end_date: dto.endDate ? new Date(dto.endDate) : null,
         compartment_number: dto.compartmentNumber ?? null,
         is_external: dto.isExternal ?? false,
-        status: 'En_curso',
+        status: dto.status ?? 'En_curso',
       },
       include: { medications: true },
     });

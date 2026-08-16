@@ -1,9 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsString } from 'class-validator';
+import { IsInt, IsNotEmpty, IsString, Max, Min } from 'class-validator';
 
 export class CreateScheduleDto {
   @ApiProperty({ example: 1, description: 'ID del treatment_detail' })
   @IsInt()
+  @Min(1)
+  @Max(2147483647)
   @IsNotEmpty({ message: 'El ID del treatment_detail es obligatorio' })
   treatmentDetailId!: number;
 

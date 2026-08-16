@@ -7,7 +7,6 @@ import { Transport, MicroserviceOptions } from '@nestjs/microservices';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Pipes globales de validación
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -16,22 +15,23 @@ async function bootstrap() {
     }),
   );
 
-  // Configuración de CORS
   app.enableCors({
-    origin: '*', // Permitir solicitudes desde cualquier origen
+    origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type, Accept, Authorization',
   });
 
-  // Conexión del Microservicio MQTT
+  // Configuración de microservicio MQTT con tiempo de espera bajo
+  const mqttUrl = process.env.MQTT_BROKER_URL || 'mqtt://178.128.0.112:1883';
   app.connectMicroservice<MicroserviceOptions>({
     transport: Transport.MQTT,
     options: {
-      url: process.env.MQTT_BROKER_URL || 'mqtt://178.128.0.112:1883',
+      url: mqttUrl,
+      connectTimeout: 3000,
+      reconnectPeriod: 0, // Desactiva reintentos infinitos en local
     },
   });
 
-  // Configuración de Swagger
   const config = new DocumentBuilder()
     .setTitle('VitalGuard API')
     .setDescription('API Backend para la gestión de adherencia a medicamentos e IoT')
@@ -39,13 +39,16 @@ async function bootstrap() {
     .addBearerAuth()
     .build();
 
-  const document = SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config));
+  SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config));
 
-  // Iniciar tanto los listeners MQTT como el servidor HTTP REST
-  await app.startAllMicroservices();
-  await app.listen(process.env.PORT ?? 3000, '0.0.0.0');
+  // PRIMERO levantamos el servidor HTTP para garantizar que los endpoints funcionen
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port, '0.0.0.0');
+  console.log(`🚀 HTTP API corriendo en: http://localhost:${port}/api/docs`);
 
-  console.log(`🚀 HTTP API corriendo en: http://localhost:${process.env.PORT ?? 3000}/api/docs`);
-  console.log(`📡 Cliente MQTT conectado escuchando eventos del ESP32...`);
+  // LUEGO intentamos iniciar los microservicios MQTT sin bloquear el hilo HTTP
+  app.startAllMicroservices()
+    .then(() => console.log(`📡 Cliente MQTT conectado a: ${mqttUrl}`))
+    .catch((err) => console.warn(`⚠️ No se pudo conectar a MQTT (${mqttUrl}). Modo HTTP activo.`));
 }
 bootstrap();

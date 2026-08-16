@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { blood_type, gender_type } from '@prisma/client';
+import { blood_type, gender_type, kinship_type } from '@prisma/client';
 import {
   IsEnum,
   IsNotEmpty,
@@ -57,4 +57,13 @@ export class CreatePatientDto {
   @IsString()
   @IsOptional()
   medicalNotes?: string;
+
+  @ApiPropertyOptional({
+    enum: kinship_type,
+    example: 'Otro',
+    description: 'Parentesco del cuidador con el paciente',
+  })
+  @IsEnum(kinship_type, { message: 'Parentesco inválido' })
+  @IsOptional()
+  kinship?: kinship_type;
 }

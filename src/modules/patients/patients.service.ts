@@ -141,7 +141,7 @@ export class PatientsService {
         data: {
           caregiver_id: caregiver.id,
           patient_id: patient.id,
-          kinship: 'Otro',
+          kinship: dto.kinship ?? 'Otro',
         },
       });
 

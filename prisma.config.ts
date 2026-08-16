@@ -11,5 +11,7 @@ export default defineConfig({
   },
   datasource: {
     url: process.env["DATABASE_URL"],
+    shadowDatabaseUrl:
+      process.env["SHADOW_DATABASE_URL"] || "postgresql://postgres:1234@localhost:5432/VitalGuardShadow?schema=public",
   },
 });

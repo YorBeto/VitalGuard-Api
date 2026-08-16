@@ -20,11 +20,13 @@ model app_profiles {
   doctors       doctors?
   treatments    treatments[]
   notifications notifications[]
+  default_alexa_patient_id Int?
 
   @@unique([vital_id, role_id])
   @@index([id], map: "idx_app_profiles_active", where: raw("(deleted_at IS NULL)"))
   @@index([role_id], map: "idx_app_profiles_role")
   @@index([vital_id], map: "idx_app_profiles_vital_id")
+  @@index([default_alexa_patient_id], map: "idx_app_profiles_default_alexa_patient")
 }
 
 model caregiver_patient {

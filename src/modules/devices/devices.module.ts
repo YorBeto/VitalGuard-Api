@@ -12,6 +12,8 @@ import { DevicesController } from './devices.controller';
           transport: Transport.MQTT,
           options: {
             url: process.env.MQTT_BROKER_URL || 'mqtt://178.128.0.112:1883',
+            connectTimeout: 5000,
+            reconnectPeriod: 10000,
           },
         }),
       },
