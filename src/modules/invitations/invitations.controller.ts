@@ -18,7 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { InvitationsService } from './invitations.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { GetVitalId } from '../../common/decorators/get-user.decorator';
+import { GetVitalId, GetEmail } from '../../common/decorators/get-user.decorator';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 
 @ApiTags('Invitations (Invitaciones de cuidadores)')
@@ -54,8 +54,11 @@ export class InvitationsController {
     summary: 'Listar invitaciones pendientes recibidas por el usuario',
   })
   @ApiResponse({ status: 200, description: 'Lista de invitaciones pendientes' })
-  async findPending(@GetVitalId() vitalId: string) {
-    return this.invitationsService.findPending(vitalId);
+  async findPending(
+    @GetVitalId() vitalId: string,
+    @GetEmail() email?: string,
+  ) {
+    return this.invitationsService.findPending(vitalId, email);
   }
 
   @Get('sent')
@@ -99,10 +102,11 @@ export class InvitationsController {
   @ApiResponse({ status: 410, description: 'Invitación expirada' })
   async accept(
     @GetVitalId() vitalId: string,
+    @GetEmail() email: string | undefined,
     @Param('id', ParseIntPipe) id: number,
     @Query('token') token?: string,
   ) {
-    return this.invitationsService.accept(vitalId, id, token);
+    return this.invitationsService.accept(vitalId, id, token, email);
   }
 
   @Post(':id/reject')
@@ -116,10 +120,11 @@ export class InvitationsController {
   @ApiResponse({ status: 200, description: 'Invitación rechazada' })
   async reject(
     @GetVitalId() vitalId: string,
+    @GetEmail() email: string | undefined,
     @Param('id', ParseIntPipe) id: number,
     @Query('token') token?: string,
   ) {
-    return this.invitationsService.reject(vitalId, id, token);
+    return this.invitationsService.reject(vitalId, id, token, email);
   }
 
   @Post(':id/cancel')

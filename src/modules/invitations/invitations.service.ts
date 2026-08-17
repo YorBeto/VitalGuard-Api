@@ -183,39 +183,58 @@ export class InvitationsService {
 
     // Enviar el correo de invitación por Resend
     if (dto.inviteeEmail && invitation.token) {
-      await this.sendInvitationEmail(invitation);
+      await this.sendInvitationEmail(invitation, dto.message);
     }
 
     return invitation;
   }
 
-  private async sendInvitationEmail(invitation: {
-    id: number;
-    token: string | null;
-    invitee_email: string | null;
-    kinship: string | null;
-    patients: { first_name: string; paternal_last_name: string };
-  }) {
-    const base = (
-      process.env.INVITE_BASE_URL || 'https://vitalguard.app/invite'
-    ).replace(/\/+$/, '');
-    const link = `${base}/${invitation.token}`;
+  private async sendInvitationEmail(
+    invitation: {
+      id: number;
+      token: string | null;
+      invitee_email: string | null;
+      kinship: string | null;
+      patients: { first_name: string; paternal_last_name: string };
+    },
+    message?: string,
+  ) {
+    const deepLink = `vitalguard://invite/${invitation.token}`;
     const patientName = `${invitation.patients.first_name} ${invitation.patients.paternal_last_name}`;
     const kinshipLabel =
       invitation.kinship === 'Otro' || !invitation.kinship
         ? 'cuidador(a)'
         : invitation.kinship;
+    const code = this.formatCode(invitation.token);
+
+    const messageBlock = message
+      ? `<p style="color:#0f172a;background:#f1f5f9;border-left:3px solid #0284c7;padding:12px 16px;border-radius:8px;font-size:14px">“${this.escapeHtml(message)}”</p>`
+      : '';
 
     const html = `
       <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#0f172a">
-        <h2 style="color:#0284c7">Invitación para cuidar</h2>
-        <p>Hola,</p>
-        <p>Han invitado a <strong>${patientName}</strong> como ${kinshipLabel} en <strong>VitalGuard</strong>.</p>
-        <p>Para aceptar la invitación y comenzar a cuidar de su salud, ingresa a la aplicación y completa el proceso:</p>
-        <p style="text-align:center;margin:28px 0">
-          <a href="${link}" style="background:#0284c7;color:#ffffff;padding:12px 22px;text-decoration:none;border-radius:8px;font-weight:bold">Aceptar invitación</a>
-        </p>
-        <p style="color:#64748b;font-size:12px">Este enlace es válido por ${INVITATION_TTL_DAYS} días. Si no esperabas esta invitación, puedes ignorar este correo.</p>
+        <div style="background:#0284c7;border-radius:12px 12px 0 0;padding:24px 28px">
+          <h1 style="color:#ffffff;margin:0;font-size:20px">Te han invitado a cuidar a ${patientName}</h1>
+        </div>
+        <div style="background:#ffffff;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;padding:28px">
+          <p>Hola,</p>
+          <p>Alguien te ha invitado a ser <strong>${kinshipLabel}</strong> de <strong>${patientName}</strong> en <strong>VitalGuard</strong>.</p>
+          ${messageBlock}
+          <h3 style="margin:24px 0 12px;color:#0f172a">¿Cómo aceptar?</h3>
+          <ol style="color:#334155;font-size:14px;line-height:1.7;padding-left:20px">
+            <li>Abre la aplicación <strong>VitalGuard</strong> e inicia sesión con el correo <strong>${invitation.invitee_email}</strong>.</li>
+            <li>Entra al apartado de <strong>Invitaciones</strong>.</li>
+            <li>Verás la invitación de <strong>${patientName}</strong> lista para aceptar.</li>
+          </ol>
+          <p style="margin:24px 0 8px;color:#334155;font-size:13px">Si la invitación no aparece, abre la app y escribe este código:</p>
+          <div style="background:#f8fafc;border:1px dashed #94a3b8;border-radius:8px;padding:12px;text-align:center;margin:8px 0 24px">
+            <span style="font-family:monospace;font-size:18px;font-weight:bold;letter-spacing:2px;color:#0284c7">${code}</span>
+          </div>
+          <p style="text-align:center;margin:24px 0">
+            <a href="${deepLink}" style="background:#0284c7;color:#ffffff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block">Abrir VitalGuard</a>
+          </p>
+          <p style="color:#64748b;font-size:12px">Este enlace y el código son válidos por ${INVITATION_TTL_DAYS} días. Si no esperabas esta invitación, puedes ignorar este correo.</p>
+        </div>
       </div>
     `;
 
@@ -231,6 +250,20 @@ export class InvitationsService {
     });
   }
 
+  private formatCode(token: string | null) {
+    const clean = (token ?? '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    return clean.match(/.{1,8}/g)?.join('-') ?? 'NO DISPONIBLE';
+  }
+
+  private escapeHtml(value: string) {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   async acceptByToken(vitalId: string, token: string) {
     const invitation = await this.prisma.patient_invitations.findFirst({
       where: { token, deleted_at: null },
@@ -241,17 +274,26 @@ export class InvitationsService {
     return this.accept(vitalId, invitation.id, token);
   }
 
-  async findPending(vitalId: string) {
+  async findPending(vitalId: string, email?: string) {
     const profile = await this.prisma.app_profiles.findFirst({
       where: { vital_id: vitalId, deleted_at: null },
     });
     if (!profile) return [];
 
-    return this.prisma.patient_invitations.findMany({
+    const or: Prisma.patient_invitationsWhereInput[] = [
+      { invitee_vital_id: vitalId },
+    ];
+    if (email && email.trim()) {
+      or.push({
+        invitee_email: { equals: email.trim(), mode: 'insensitive' },
+      });
+    }
+
+    const invitations = await this.prisma.patient_invitations.findMany({
       where: {
-        invitee_vital_id: vitalId,
         status: 'PENDIENTE',
         deleted_at: null,
+        OR: or,
       },
       include: {
         patients: true,
@@ -259,6 +301,35 @@ export class InvitationsService {
       },
       orderBy: { created_at: 'desc' },
     });
+
+    // Invitaciones por email: crear la notificación in-app la primera vez
+    // que el invitado (ya identificado por su correo) consulta sus pendientes.
+    if (email && email.trim()) {
+      const target = email.trim().toLowerCase();
+      for (const invitation of invitations) {
+        if (!invitation.invitee_email) continue;
+        if (invitation.invitee_email.toLowerCase() !== target) continue;
+        const existing = await this.prisma.notifications.findFirst({
+          where: {
+            app_profile_id: profile.id,
+            metadata: { path: ['invitation_id'], equals: invitation.id },
+            deleted_at: null,
+          },
+        });
+        if (existing) continue;
+        const patient = invitation.patients;
+        await this.notifyProfile(
+          profile.id,
+          'Invitación para cuidar',
+          `Has sido invitado a cuidar a ${patient.first_name} ${patient.paternal_last_name}`,
+          'INVITACION_CUIDADOR',
+          invitation.patient_id,
+          { invitation_id: invitation.id },
+        );
+      }
+    }
+
+    return invitations;
   }
 
   async findSent(vitalId: string) {
@@ -274,6 +345,7 @@ export class InvitationsService {
     invitationId: number,
     vitalId: string,
     token?: string,
+    email?: string,
   ) {
     const invitation = await this.prisma.patient_invitations.findFirst({
       where: { id: invitationId, deleted_at: null },
@@ -311,7 +383,12 @@ export class InvitationsService {
         throw new ForbiddenException('No tienes permiso para esta invitación');
       }
     } else if (invitation.invitee_email) {
-      if (!token || token !== invitation.token) {
+      const matchesEmail =
+        !!email &&
+        email.trim().toLowerCase() ===
+          invitation.invitee_email.trim().toLowerCase();
+      const matchesToken = !!token && token === invitation.token;
+      if (!matchesEmail && !matchesToken) {
         throw new ForbiddenException('Token de invitación inválido o faltante');
       }
     }
@@ -319,11 +396,12 @@ export class InvitationsService {
     return invitation;
   }
 
-  async accept(vitalId: string, invitationId: number, token?: string) {
+  async accept(vitalId: string, invitationId: number, token?: string, email?: string) {
     const invitation = await this.getPendingForInvitee(
       invitationId,
       vitalId,
       token,
+      email,
     );
 
     const invitee = await this.getCaregiverOrThrow(vitalId);
@@ -407,11 +485,12 @@ export class InvitationsService {
     };
   }
 
-  async reject(vitalId: string, invitationId: number, token?: string) {
+  async reject(vitalId: string, invitationId: number, token?: string, email?: string) {
     const invitation = await this.getPendingForInvitee(
       invitationId,
       vitalId,
       token,
+      email,
     );
 
     const updated = await this.prisma.patient_invitations.update({
