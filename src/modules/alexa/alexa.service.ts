@@ -43,19 +43,31 @@ export class AlexaService {
   async handle(body: AlexaRequestBody) {
     const accessToken = body?.context?.System?.user?.accessToken;
     const request = body?.request;
+    const appId = body?.context?.System?.application?.applicationId;
+
+    console.log(
+      `[Alexa] POST /alexa | skill=${appId} | requestType=${request?.type} | intent=${request?.intent?.name}`,
+    );
 
     // B3/B4: sin token → pedir vinculación
     if (!accessToken) {
+      console.log('[Alexa] B3/B4 -> Sin accessToken. Pidiendo vinculación.');
       return this.speak(
         'Para usar VitalGuard necesito que conectes tu cuenta. Abre la aplicación móvil y toca "Conectar Alexa".',
       );
     }
 
+    console.log(
+      `[Alexa] accessToken presente (${accessToken.length} chars): ${accessToken.slice(0, 12)}...`,
+    );
+
     // Validar token contra Vital ID
     let vitalId: string;
     try {
       vitalId = await this.identityService.resolveVitalId(accessToken);
-    } catch {
+      console.log(`[Alexa] Identidad resuelta: vitalId=${vitalId}`);
+    } catch (err) {
+      console.warn('[Alexa] B8 -> Error resolviendo identidad:', (err as any)?.message || err);
       // B8: token inválido/revocado
       return this.speak(
         'Tu sesión expiró. Vuelve a conectar tu cuenta en la aplicación móvil.',
@@ -64,6 +76,9 @@ export class AlexaService {
 
     // Resolver paciente
     const resolution = await this.resolver.resolve(vitalId);
+    console.log(
+      `[Alexa] Resolución paciente: ok=${resolution.ok} | patientId=${resolution.patient?.id} | message=${resolution.message}`,
+    );
     if (!resolution.ok || !resolution.patient) {
       // B5 o B7
       return this.speak(
@@ -77,8 +92,10 @@ export class AlexaService {
     // Enrutado por tipo de request / intent
     switch (request?.type) {
       case 'LaunchRequest':
+        console.log('[Alexa] LaunchRequest -> bienvenida');
         return this.handleLaunch();
       case 'IntentRequest':
+        console.log(`[Alexa] IntentRequest -> intent="${request.intent?.name}"`);
         return this.handleIntent(
           request.intent?.name,
           request.intent?.slots,
@@ -86,8 +103,10 @@ export class AlexaService {
           vitalId,
         );
       case 'SessionEndedRequest':
+        console.log('[Alexa] SessionEndedRequest -> despedida');
         return this.speak('Hasta pronto. Cuidate mucho.');
       default:
+        console.log(`[Alexa] requestType desconocido="${request?.type}" -> bienvenida`);
         return this.handleLaunch();
     }
   }
@@ -100,10 +119,13 @@ export class AlexaService {
   ) {
     switch (intentName) {
       case 'ConsultarTomasIntent':
+        console.log('[Alexa] ConsultarTomasIntent -> consulta de próxima toma');
         return this.handleCheckSchedule(patientId!);
       case 'TomarMedicinaIntent':
+        console.log('[Alexa] TomarMedicinaIntent -> marcar toma como tomada');
         return this.handleMarkTaken(patientId!);
       case 'SosIntent':
+        console.log('[Alexa] SosIntent -> disparar SOS');
         return this.handleSos(patientId!);
       case 'AMAZON.HelpIntent':
         return this.speak(
@@ -115,6 +137,7 @@ export class AlexaService {
       default:
         // B9: FallbackIntent, intent libre configurable o intent desconocido → IA real
         const freeText = this.extractFreeText(slots);
+        console.log(`[Alexa] Intent desconocido/no-manejado "${intentName}" -> IA libre. Texto="${freeText}"`);
         return this.handleFreeForm(intentName, patientId!, vitalId!, freeText);
     }
   }

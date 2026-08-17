@@ -6,3 +6,10 @@ export const GetVitalId = createParamDecorator(
     return request.user?.vitalId;
   },
 );
+
+export const GetEmail = createParamDecorator(
+  (data: unknown, ctx: ExecutionContext): string | undefined => {
+    const request = ctx.switchToHttp().getRequest();
+    return request.user?.email;
+  },
+);

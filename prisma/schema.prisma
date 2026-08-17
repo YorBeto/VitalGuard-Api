@@ -20,6 +20,7 @@ model app_profiles {
   doctors       doctors?
   treatments    treatments[]
   notifications notifications[]
+  device_tokens device_tokens[]
   default_alexa_patient_id Int?
 
   @@unique([vital_id, role_id])
@@ -57,6 +58,7 @@ model caregivers {
   devices                   devices[]
   sos_events                sos_events[]
   voice_messages            voice_messages[]
+  sent_invitations          patient_invitations[] @relation("InvitationsSent")
 
   @@index([id], map: "idx_caregivers_active", where: raw("(deleted_at IS NULL)"))
   @@index([app_profile_id], map: "idx_caregivers_app_profile")
@@ -180,8 +182,35 @@ model patients {
   treatments         treatments[]
   voice_messages     voice_messages[]
   notifications      notifications[]
+  patient_invitations patient_invitations[]
 
   @@index([id], map: "idx_patients_active", where: raw("(deleted_at IS NULL)"))
+}
+
+model patient_invitations {
+  id                      Int                @id @default(autoincrement())
+  patient_id              Int
+  invited_by_caregiver_id Int
+  invitee_vital_id        String?            @db.Uuid
+  invitee_email           String?            @db.VarChar(254)
+  invitee_role            invitee_role       @default(CAREGIVER)
+  kinship                 kinship_type?
+  status                  invitation_status  @default(PENDIENTE)
+  token                   String?            @unique
+  expires_at              DateTime?          @db.Timestamp(6)
+  responded_at            DateTime?          @db.Timestamp(6)
+  email_delivered         Boolean?           @default(false)
+  created_at              DateTime?          @default(now()) @db.Timestamp(6)
+  updated_at              DateTime?          @default(now()) @db.Timestamp(6)
+  deleted_at              DateTime?          @db.Timestamp(6)
+  patients                patients           @relation(fields: [patient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caregivers              caregivers         @relation("InvitationsSent", fields: [invited_by_caregiver_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "idx_invitations_active", where: raw("(deleted_at IS NULL)"))
+  @@index([patient_id], map: "idx_invitations_patient")
+  @@index([invited_by_caregiver_id], map: "idx_invitations_sender")
+  @@index([invitee_vital_id], map: "idx_invitations_invitee")
+  @@index([status], map: "idx_invitations_status")
 }
 
 model roles {
@@ -310,11 +339,39 @@ model notifications {
   @@index([is_read], map: "idx_notifications_unread")
 }
 
+model device_tokens {
+  id             Int          @id @default(autoincrement())
+  app_profile_id Int
+  token          String       @unique
+  platform       String?      @db.VarChar(20)
+  created_at     DateTime?    @default(now()) @db.Timestamp(6)
+  updated_at     DateTime?    @default(now()) @db.Timestamp(6)
+  deleted_at     DateTime?    @db.Timestamp(6)
+  app_profiles   app_profiles @relation(fields: [app_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([app_profile_id], map: "idx_device_tokens_profile")
+  @@index([token], map: "idx_device_tokens_token")
+}
+
 enum notification_type {
   MEDICAMENTO_SOLICITUD
   DOSIS_RECORDATORIO
   SOS_ALERTA
   SISTEMA
+  INVITACION_CUIDADOR
+}
+
+enum invitation_status {
+  PENDIENTE
+  ACEPTADA
+  RECHAZADA
+  CANCELADA
+  EXPIRADA
+}
+
+enum invitee_role {
+  CAREGIVER
+  DOCTOR
 }
 
 enum app_name {
