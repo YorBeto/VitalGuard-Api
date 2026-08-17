@@ -17,12 +17,15 @@ import { TreatmentDetailsModule } from './modules/treatment-details/treatment-de
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 import { AlexaModule } from './modules/alexa/alexa.module';
 import { AiModule } from './modules/ai/ai.module';
+import { InvitationsModule } from './modules/invitations/invitations.module';
+import { MailModule } from './modules/mail/mail.module';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
+    MailModule,
     AppProfilesModule,
     PatientsModule,
     DoctorsModule,
@@ -38,6 +41,7 @@ import { AiModule } from './modules/ai/ai.module';
     SchedulerModule,
     AlexaModule,
     AiModule,
+    InvitationsModule,
   ],
   controllers: [],
 })
