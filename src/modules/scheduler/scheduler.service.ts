@@ -1,12 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class SchedulerService {
   private readonly logger = new Logger(SchedulerService.name);
+  /** Ventana de escalado antes de marcar una dosis como omitida y avisar a cuidadores. */
+  private readonly omissionTimeoutMinutes = 15;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
   async handleScheduleTick() {
@@ -92,7 +98,9 @@ export class SchedulerService {
     threshold.setHours(23, 59, 59, 999);
 
     const now = new Date();
-    const omitThreshold = new Date(now.getTime() - 30 * 60 * 1000);
+    const omitThreshold = new Date(
+      now.getTime() - this.omissionTimeoutMinutes * 60 * 1000,
+    );
 
     const staleLogs = await this.prisma.medication_logs.findMany({
       where: {
@@ -112,5 +120,43 @@ export class SchedulerService {
     });
 
     this.logger.log(`Marcadas ${staleLogs.length} dosis como Omitida`);
+
+    await this.notifyOmittedCaregivers(staleLogs.map((l) => l.schedule_id));
+  }
+
+  /** Notifica a los cuidadores de cada paciente afectado por dosis omitidas. */
+  private async notifyOmittedCaregivers(scheduleIds: number[]) {
+    const unique = [...new Set(scheduleIds)];
+    const schedules = await this.prisma.schedules.findMany({
+      where: { id: { in: unique } },
+      include: {
+        treatment_details: {
+          select: { treatments: { select: { patient_id: true } } },
+        },
+      },
+    });
+
+    const patientIds = [
+      ...new Set(
+        schedules
+          .map((s) => s.treatment_details?.treatments?.patient_id)
+          .filter((n): n is number => typeof n === 'number'),
+      ),
+    ];
+
+    for (const patientId of patientIds) {
+      const profiles =
+        await this.notificationsService.caregiverProfilesForPatient(patientId);
+      for (const profileId of profiles) {
+        await this.notificationsService.createAndPush(profileId, {
+          title: 'Dosis omitida',
+          message:
+            'El paciente no tomó su medicamento a tiempo. Verifica su estado.',
+          type: 'DOSIS_RECORDATORIO',
+          patientId,
+          route: 'schedule',
+        });
+      }
+    }
   }
 }

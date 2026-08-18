@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   CreateMedicationLogDto,
   UpdateMedicationLogDto,
@@ -7,7 +8,10 @@ import {
 
 @Injectable()
 export class MedicationLogsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   async findRecent(patientId: number) {
     const treatments = await this.prisma.treatments.findMany({
@@ -65,15 +69,20 @@ export class MedicationLogsService {
     return { adherence: +(completed / total).toFixed(2), total, completed };
   }
 
-  async create(dto: CreateMedicationLogDto) {
+  async create(dto: CreateMedicationLogDto, vitalId?: string) {
     const schedule = await this.prisma.schedules.findFirst({
       where: { id: dto.scheduleId, deleted_at: null },
+      include: {
+        treatment_details: {
+          include: { treatments: true, medications: true },
+        },
+      },
     });
     if (!schedule) {
       throw new NotFoundException('Schedule no encontrado');
     }
 
-    return this.prisma.medication_logs.create({
+    const log = await this.prisma.medication_logs.create({
       data: {
         schedule_id: dto.scheduleId,
         scheduled_datetime: new Date(dto.scheduledDatetime),
@@ -84,9 +93,15 @@ export class MedicationLogsService {
         voice_confirmed: dto.voiceConfirmed ?? false,
       },
     });
+
+    if ((dto.status ?? 'Pendiente') === 'Confirmado') {
+      await this.notifyDoseConfirmed(schedule, vitalId);
+    }
+
+    return log;
   }
 
-  async update(id: number, dto: UpdateMedicationLogDto) {
+  async update(id: number, dto: UpdateMedicationLogDto, vitalId?: string) {
     const log = await this.prisma.medication_logs.findFirst({
       where: { id, deleted_at: null },
     });
@@ -94,7 +109,7 @@ export class MedicationLogsService {
       throw new NotFoundException('Medication log no encontrado');
     }
 
-    return this.prisma.medication_logs.update({
+    const updated = await this.prisma.medication_logs.update({
       where: { id },
       data: {
         ...(dto.status !== undefined && { status: dto.status }),
@@ -106,5 +121,60 @@ export class MedicationLogsService {
         }),
       },
     });
+
+    // Notificar solo en la transición a Confirmado (evita duplicados)
+    if (dto.status === 'Confirmado' && log.status !== 'Confirmado') {
+      const schedule = await this.prisma.schedules.findFirst({
+        where: { id: log.schedule_id, deleted_at: null },
+        include: {
+          treatment_details: {
+            include: { treatments: true, medications: true },
+          },
+        },
+      });
+      if (schedule) {
+        await this.notifyDoseConfirmed(schedule, vitalId);
+      }
+    }
+
+    return updated;
+  }
+
+  private async notifyDoseConfirmed(
+    schedule: {
+      treatment_details: {
+        treatments: { patient_id: number };
+        medications: { name: string };
+      };
+    },
+    vitalId?: string,
+  ) {
+    const detail = schedule.treatment_details;
+    const patientId = detail.treatments.patient_id;
+    const medName = detail.medications.name;
+
+    // Excluir al actor (si es cuidador confirmando en nombre del paciente)
+    let actorProfileId: number | undefined;
+    if (vitalId) {
+      const actorProfile = await this.prisma.app_profiles.findFirst({
+        where: { vital_id: vitalId, deleted_at: null },
+        select: { id: true },
+      });
+      actorProfileId = actorProfile?.id;
+    }
+
+    const profiles = await this.notificationsService.caregiverProfilesForPatient(
+      patientId,
+      actorProfileId,
+    );
+    for (const profileId of profiles) {
+      await this.notificationsService.createAndPush(profileId, {
+        title: 'Dosis confirmada',
+        message: `La dosis de ${medName} fue confirmada.`,
+        type: 'DOSIS_RECORDATORIO',
+        patientId,
+        route: 'schedule',
+      });
+    }
   }
 }
