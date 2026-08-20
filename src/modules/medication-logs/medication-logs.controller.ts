@@ -17,6 +17,7 @@ import {
 } from '@nestjs/swagger';
 import { MedicationLogsService } from './medication-logs.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { GetVitalId } from '../../common/decorators/get-user.decorator';
 import {
   CreateMedicationLogDto,
   UpdateMedicationLogDto,
@@ -51,8 +52,11 @@ export class MedicationLogsController {
   @ApiBody({ type: CreateMedicationLogDto })
   @ApiResponse({ status: 201, description: 'Log creado (Pendiente)' })
   @ApiResponse({ status: 404, description: 'Schedule no encontrado' })
-  async create(@Body() dto: CreateMedicationLogDto) {
-    return this.medicationLogsService.create(dto);
+  async create(
+    @Body() dto: CreateMedicationLogDto,
+    @GetVitalId() vitalId: string,
+  ) {
+    return this.medicationLogsService.create(dto, vitalId);
   }
 
   @Patch(':id')
@@ -67,7 +71,8 @@ export class MedicationLogsController {
   async update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateMedicationLogDto,
+    @GetVitalId() vitalId: string,
   ) {
-    return this.medicationLogsService.update(id, dto);
+    return this.medicationLogsService.update(id, dto, vitalId);
   }
 }

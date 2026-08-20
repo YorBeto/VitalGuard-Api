@@ -1,6 +1,16 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, notification_type } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FcmService } from './fcm.service';
+
+export interface CreateNotificationInput {
+  title: string;
+  message: string;
+  type: notification_type;
+  patientId?: number | null;
+  metadata?: Prisma.InputJsonValue;
+  route?: string;
+}
 
 @Injectable()
 export class NotificationsService {
@@ -64,16 +74,75 @@ export class NotificationsService {
     body: string,
     data?: Record<string, string>,
   ) {
-    const tokens = await this.prisma.device_tokens.findMany({
-      where: { app_profile_id: appProfileId, deleted_at: null },
-      select: { token: true },
-    });
+    const tokens = await this.getTokens(appProfileId);
     await this.fcmService.send({
-      tokens: tokens.map((t) => t.token),
+      tokens,
       title,
       body,
       data,
     });
+  }
+
+  private async getTokens(appProfileId: number): Promise<string[]> {
+    const rows = await this.prisma.device_tokens.findMany({
+      where: { app_profile_id: appProfileId, deleted_at: null },
+      select: { token: true },
+    });
+    return rows.map((r) => r.token);
+  }
+
+  /** Crea la fila de notificación en BD y, además, dispara el push FCM al perfil. */
+  async createAndPush(appProfileId: number, input: CreateNotificationInput) {
+    const notif = await this.prisma.notifications.create({
+      data: {
+        app_profile_id: appProfileId,
+        patient_id: input.patientId ?? null,
+        title: input.title,
+        message: input.message,
+        type: input.type,
+        metadata: input.metadata ?? Prisma.JsonNull,
+      },
+    });
+    await this.fcmService.send({
+      tokens: await this.getTokens(appProfileId),
+      title: input.title,
+      body: input.message,
+      data: {
+        id: String(notif.id),
+        title: input.title,
+        body: input.message,
+        type: input.type,
+        route: input.route ?? '',
+      },
+    });
+    return notif;
+  }
+
+  /**
+   * Devuelve los app_profile_id de todos los cuidadores vinculados a un paciente
+   * (relación caregiver_patient). Opcionalmente excluye un perfil (p. ej. el actor).
+   */
+  async caregiverProfilesForPatient(
+    patientId: number,
+    excludeProfileId?: number,
+  ): Promise<number[]> {
+    const links = await this.prisma.caregiver_patient.findMany({
+      where: { patient_id: patientId, deleted_at: null },
+      select: { caregiver_id: true },
+    });
+    if (links.length === 0) return [];
+
+    const caregivers = await this.prisma.caregivers.findMany({
+      where: {
+        id: { in: links.map((l) => l.caregiver_id) },
+        deleted_at: null,
+      },
+      select: { app_profile_id: true },
+    });
+
+    return caregivers
+      .map((c) => c.app_profile_id)
+      .filter((id) => id !== excludeProfileId);
   }
 
   async findAllByUser(vitalId: string) {
