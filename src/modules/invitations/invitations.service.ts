@@ -42,6 +42,17 @@ export class InvitationsService {
     return caregiver;
   }
 
+  private async getDoctorByVitalId(vitalId: string) {
+    const appProfile = await this.prisma.app_profiles.findFirst({
+      where: { vital_id: vitalId, deleted_at: null },
+    });
+    if (!appProfile) return null;
+
+    return this.prisma.doctors.findFirst({
+      where: { app_profile_id: appProfile.id, deleted_at: null },
+    });
+  }
+
   private async assertCaresForPatient(caregiverId: number, patientId: number) {
     const relation = await this.prisma.caregiver_patient.findFirst({
       where: {
@@ -194,53 +205,29 @@ export class InvitationsService {
       id: number;
       token: string | null;
       invitee_email: string | null;
+      invitee_role: string;
       kinship: string | null;
       patients: { first_name: string; paternal_last_name: string };
     },
     message?: string,
   ) {
-    const deepLink = `vitalguard://invite/${invitation.token}`;
     const patientName = `${invitation.patients.first_name} ${invitation.patients.paternal_last_name}`;
-    const kinshipLabel =
-      invitation.kinship === 'Otro' || !invitation.kinship
-        ? 'cuidador(a)'
-        : invitation.kinship;
     const code = this.formatCode(invitation.token);
+    const isDoctor = invitation.invitee_role === 'DOCTOR';
+    const base = (
+      process.env.INVITE_BASE_URL || 'https://vitalguard.app/invite'
+    ).replace(/\/+$/, '');
+    const webAcceptLink = `${base}/${invitation.token}`;
 
-    const messageBlock = message
-      ? `<p style="color:#0f172a;background:#f1f5f9;border-left:3px solid #0284c7;padding:12px 16px;border-radius:8px;font-size:14px">“${this.escapeHtml(message)}”</p>`
-      : '';
-
-    const html = `
-      <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#0f172a">
-        <div style="background:#0284c7;border-radius:12px 12px 0 0;padding:24px 28px">
-          <h1 style="color:#ffffff;margin:0;font-size:20px">Te han invitado a cuidar a ${patientName}</h1>
-        </div>
-        <div style="background:#ffffff;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;padding:28px">
-          <p>Hola,</p>
-          <p>Alguien te ha invitado a ser <strong>${kinshipLabel}</strong> de <strong>${patientName}</strong> en <strong>VitalGuard</strong>.</p>
-          ${messageBlock}
-          <h3 style="margin:24px 0 12px;color:#0f172a">¿Cómo aceptar?</h3>
-          <ol style="color:#334155;font-size:14px;line-height:1.7;padding-left:20px">
-            <li>Abre la aplicación <strong>VitalGuard</strong> e inicia sesión con el correo <strong>${invitation.invitee_email}</strong>.</li>
-            <li>Entra al apartado de <strong>Invitaciones</strong>.</li>
-            <li>Verás la invitación de <strong>${patientName}</strong> lista para aceptar.</li>
-          </ol>
-          <p style="margin:24px 0 8px;color:#334155;font-size:13px">Si la invitación no aparece, abre la app y escribe este código:</p>
-          <div style="background:#f8fafc;border:1px dashed #94a3b8;border-radius:8px;padding:12px;text-align:center;margin:8px 0 24px">
-            <span style="font-family:monospace;font-size:18px;font-weight:bold;letter-spacing:2px;color:#0284c7">${code}</span>
-          </div>
-          <p style="text-align:center;margin:24px 0">
-            <a href="${deepLink}" style="background:#0284c7;color:#ffffff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block">Abrir VitalGuard</a>
-          </p>
-          <p style="color:#64748b;font-size:12px">Este enlace y el código son válidos por ${INVITATION_TTL_DAYS} días. Si no esperabas esta invitación, puedes ignorar este correo.</p>
-        </div>
-      </div>
-    `;
+    const html = isDoctor
+      ? this.renderDoctorEmail(invitation, patientName, code, webAcceptLink, message)
+      : this.renderCaregiverEmail(invitation, patientName, code, message);
 
     await this.mailService.send({
       to: invitation.invitee_email!,
-      subject: `Invitación para cuidar a ${patientName} en VitalGuard`,
+      subject: isDoctor
+        ? `Invitación para atender a ${patientName} en VitalGuard`
+        : `Invitación para cuidar a ${patientName} en VitalGuard`,
       html,
     });
 
@@ -248,6 +235,107 @@ export class InvitationsService {
       where: { id: invitation.id },
       data: { email_delivered: true },
     });
+  }
+
+  private renderCaregiverEmail(
+    invitation: {
+      id: number;
+      token: string | null;
+      invitee_email: string | null;
+      kinship: string | null;
+      patients: { first_name: string; paternal_last_name: string };
+    },
+    patientName: string,
+    code: string,
+    message?: string,
+  ) {
+    const kinshipLabel =
+      invitation.kinship === 'Otro' || !invitation.kinship
+        ? 'cuidador(a)'
+        : invitation.kinship;
+    const deepLink = `vitalguard://invite/${invitation.token}`;
+    const messageBlock = message
+      ? `<p style="color:#0f172a;background:#f1f5f9;border-left:3px solid #0284c7;padding:12px 16px;border-radius:8px;font-size:14px;margin:0 0 20px">“${this.escapeHtml(message)}”</p>`
+      : '';
+
+    return this.emailShell(
+      `Te invitan a cuidar a ${patientName}`,
+      `
+        <p style="margin:0 0 16px">Hola,</p>
+        <p style="margin:0 0 16px">Alguien te ha invitado a ser <strong>${kinshipLabel}</strong> de <strong>${patientName}</strong> en <strong>VitalGuard</strong>.</p>
+        ${messageBlock}
+        <h3 style="margin:24px 0 12px;font-size:15px">¿Cómo aceptar?</h3>
+        <ol style="color:#334155;font-size:14px;line-height:1.7;padding-left:20px;margin:0">
+          <li>Abre la aplicación <strong>VitalGuard</strong> e inicia sesión con el correo <strong>${invitation.invitee_email}</strong>.</li>
+          <li>Entra al apartado de <strong>Invitaciones</strong>.</li>
+          <li>Verás la invitación de <strong>${patientName}</strong> lista para aceptar.</li>
+        </ol>
+        <p style="margin:24px 0 8px;color:#334155;font-size:13px">Si la invitación no aparece, abre la app y escribe este código:</p>
+        <div style="background:#f8fafc;border:1px dashed #94a3b8;border-radius:8px;padding:12px;text-align:center;margin:0 0 24px">
+          <span style="font-family:monospace;font-size:18px;font-weight:bold;letter-spacing:2px;color:#0284c7">${code}</span>
+        </div>
+        <p style="text-align:center;margin:24px 0 0">
+          <a href="${deepLink}" style="background:#0284c7;color:#ffffff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block">Abrir VitalGuard</a>
+        </p>
+      `,
+    );
+  }
+
+  private renderDoctorEmail(
+    invitation: {
+      id: number;
+      token: string | null;
+      invitee_email: string | null;
+      patients: { first_name: string; paternal_last_name: string };
+    },
+    patientName: string,
+    code: string,
+    webAcceptLink: string,
+    message?: string,
+  ) {
+    const messageBlock = message
+      ? `<p style="color:#0f172a;background:#f1f5f9;border-left:3px solid #7c3aed;padding:12px 16px;border-radius:8px;font-size:14px;margin:0 0 20px">“${this.escapeHtml(message)}”</p>`
+      : '';
+
+    return this.emailShell(
+      `Invitación para atender a ${patientName}`,
+      `
+        <p style="margin:0 0 16px">Hola, doctor(a):</p>
+        <p style="margin:0 0 16px">Te han invitado a <strong>atender a ${patientName}</strong> a través de <strong>VitalGuard</strong>.</p>
+        <p style="margin:0 0 20px">Como médico podrás acceder a la información clínica del paciente, sus tratamientos y su seguimiento.</p>
+        ${messageBlock}
+        <h3 style="margin:24px 0 12px;font-size:15px">¿Cómo aceptar?</h3>
+        <ol style="color:#334155;font-size:14px;line-height:1.7;padding-left:20px;margin:0">
+          <li>Ingresa a <strong>vitalguard.app</strong> en tu navegador.</li>
+          <li><strong>Inicia sesión</strong> con tu cuenta; si es la primera vez, <strong>crea tu cuenta</strong> con el correo <strong>${invitation.invitee_email}</strong>.</li>
+          <li>Entra al apartado de <strong>Invitaciones</strong> y acepta la invitación de <strong>${patientName}</strong>.</li>
+        </ol>
+        <p style="text-align:center;margin:24px 0">
+          <a href="${webAcceptLink}" style="background:#7c3aed;color:#ffffff;padding:14px 28px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;font-size:15px">Aceptar en vitalguard.app</a>
+        </p>
+        <p style="margin:24px 0 8px;color:#334155;font-size:13px">¿Tienes problemas para verla? Acepta con este código en la web:</p>
+        <div style="background:#f8fafc;border:1px dashed #a78bfa;border-radius:8px;padding:12px;text-align:center;margin:0 0 8px">
+          <span style="font-family:monospace;font-size:18px;font-weight:bold;letter-spacing:2px;color:#7c3aed">${code}</span>
+        </div>
+      `,
+    );
+  }
+
+  private emailShell(title: string, body: string) {
+    return `
+      <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#0f172a;background:#f8fafc;padding:24px 16px">
+        <div style="margin:0 0 16px;text-align:center">
+          <span style="font-size:22px;font-weight:800;color:#0f172a">Vital<span style="color:#0284c7">Guard</span></span>
+        </div>
+        <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;padding:28px;box-shadow:0 1px 3px rgba(15,23,42,0.06)">
+          <h1 style="margin:0 0 18px;font-size:20px;color:#0f172a">${title}</h1>
+          ${body}
+          <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px" />
+          <p style="color:#64748b;font-size:12px;margin:0">Este enlace y el código son válidos por ${INVITATION_TTL_DAYS} días. Si no esperabas esta invitación, puedes ignorar este correo.</p>
+        </div>
+        <p style="color:#94a3b8;font-size:11px;text-align:center;margin:16px 0 0">VitalGuard · Cuidado de salud conectado · vitalguard.app</p>
+      </div>
+    `;
   }
 
   private formatCode(token: string | null) {
@@ -318,10 +406,14 @@ export class InvitationsService {
         });
         if (existing) continue;
         const patient = invitation.patients;
+        const actionLabel =
+          invitation.invitee_role === 'DOCTOR' ? 'atender a' : 'cuidar a';
         await this.notifyProfile(
           profile.id,
-          'Invitación para cuidar',
-          `Has sido invitado a cuidar a ${patient.first_name} ${patient.paternal_last_name}`,
+          invitation.invitee_role === 'DOCTOR'
+            ? 'Invitación para atender'
+            : 'Invitación para cuidar',
+          `Has sido invitado a ${actionLabel} ${patient.first_name} ${patient.paternal_last_name}`,
           'INVITACION_CUIDADOR',
           invitation.patient_id,
           { invitation_id: invitation.id },
@@ -404,26 +496,49 @@ export class InvitationsService {
       email,
     );
 
-    const invitee = await this.getCaregiverOrThrow(vitalId);
-
     return this.prisma
       .$transaction(async (tx) => {
-        const existingLink = await tx.caregiver_patient.findFirst({
-          where: {
-            caregiver_id: invitee.id,
-            patient_id: invitation.patient_id,
-            deleted_at: null,
-          },
-        });
-
-        if (!existingLink && invitation.invitee_role === 'CAREGIVER') {
-          await tx.caregiver_patient.create({
-            data: {
-              caregiver_id: invitee.id,
+        if (invitation.invitee_role === 'DOCTOR') {
+          const doctor = await this.getDoctorByVitalId(vitalId);
+          if (!doctor) {
+            throw new NotFoundException('Perfil de médico no encontrado');
+          }
+          const existingLink = await tx.doctor_patient.findFirst({
+            where: {
+              doctor_id: doctor.id,
               patient_id: invitation.patient_id,
-              kinship: invitation.kinship ?? 'Otro',
+              deleted_at: null,
             },
           });
+          if (!existingLink) {
+            await tx.doctor_patient.create({
+              data: {
+                doctor_id: doctor.id,
+                patient_id: invitation.patient_id,
+              },
+            });
+          }
+        } else {
+          const caregiver = await this.getCaregiverByVitalId(vitalId);
+          if (!caregiver) {
+            throw new NotFoundException('Perfil de cuidador no encontrado');
+          }
+          const existingLink = await tx.caregiver_patient.findFirst({
+            where: {
+              caregiver_id: caregiver.id,
+              patient_id: invitation.patient_id,
+              deleted_at: null,
+            },
+          });
+          if (!existingLink) {
+            await tx.caregiver_patient.create({
+              data: {
+                caregiver_id: caregiver.id,
+                patient_id: invitation.patient_id,
+                kinship: invitation.kinship ?? 'Otro',
+              },
+            });
+          }
         }
 
         const updated = await tx.patient_invitations.update({
@@ -436,6 +551,9 @@ export class InvitationsService {
           include: { patients: true },
         });
 
+        const isDoctor = invitation.invitee_role === 'DOCTOR';
+        const actionLabel = isDoctor ? 'atender a' : 'cuidar a';
+
         // Notificar al remitente que su invitación fue aceptada
         const inviter = await tx.caregivers.findUnique({
           where: { id: invitation.invited_by_caregiver_id },
@@ -446,7 +564,7 @@ export class InvitationsService {
               app_profile_id: inviter.app_profile_id,
               patient_id: invitation.patient_id,
               title: 'Invitación aceptada',
-              message: `Tu invitación para cuidar a ${updated.patients.first_name} ${updated.patients.paternal_last_name} fue aceptada`,
+              message: `Tu invitación para ${actionLabel} ${updated.patients.first_name} ${updated.patients.paternal_last_name} fue aceptada`,
               type: 'INVITACION_CUIDADOR',
               metadata: { invitation_id: invitation.id },
             },
@@ -457,8 +575,10 @@ export class InvitationsService {
       })
       .then(async ({ updated, inviterProfileId }) => {
         if (inviterProfileId) {
+          const isDoctor = invitation.invitee_role === 'DOCTOR';
+          const actionLabel = isDoctor ? 'atender a' : 'cuidar a';
           const title = 'Invitación aceptada';
-          const message = `Tu invitación para cuidar a ${updated.patients.first_name} ${updated.patients.paternal_last_name} fue aceptada`;
+          const message = `Tu invitación para ${actionLabel} ${updated.patients.first_name} ${updated.patients.paternal_last_name} fue aceptada`;
           await this.notificationsService.pushToProfile(
             inviterProfileId,
             title,
