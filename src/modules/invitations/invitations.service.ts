@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -17,6 +18,7 @@ const INVITATION_TTL_DAYS = 7;
 
 @Injectable()
 export class InvitationsService {
+  private readonly logger = new Logger(InvitationsService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
@@ -168,6 +170,7 @@ export class InvitationsService {
       const inviteeProfile = await this.prisma.app_profiles.findFirst({
         where: { vital_id: dto.inviteeVitalId, deleted_at: null },
       });
+      this.logger.log(`[create] inviteeVitalId=${dto.inviteeVitalId} profileFound=${!!inviteeProfile} profileId=${inviteeProfile?.id ?? '-'}`);
       if (inviteeProfile) {
         const isDoctor = dto.inviteeRole === 'DOCTOR';
         const action = isDoctor ? 'atender' : 'cuidar';
@@ -189,6 +192,11 @@ export class InvitationsService {
             invitee_role: dto.inviteeRole ?? 'CAREGIVER',
           },
         );
+        this.logger.log(`[create] notif creada id=${notif.id} profile=${inviteeProfile.id} invitation=${invitation.id}`);
+        const tokenCount = await this.prisma.device_tokens.count({
+          where: { app_profile_id: inviteeProfile.id, deleted_at: null },
+        });
+        this.logger.log(`[create] invitado profile=${inviteeProfile.id} tiene ${tokenCount} device_tokens`);
         await this.notificationsService.pushToProfile(
           inviteeProfile.id,
           title,
@@ -202,6 +210,9 @@ export class InvitationsService {
             invitation.id,
           ),
         );
+        this.logger.log(`[create] push disparado invitation=${invitation.id} -> profile=${inviteeProfile.id}`);
+      } else {
+        this.logger.warn(`[create] inviteeVitalId ${dto.inviteeVitalId} no tiene app_profile, no se crea push`);
       }
     }
 

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma, notification_type } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FcmService } from './fcm.service';
@@ -14,6 +14,7 @@ export interface CreateNotificationInput {
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly fcmService: FcmService,
@@ -30,29 +31,112 @@ export class NotificationsService {
   }
 
   async registerToken(vitalId: string, token: string, platform?: string) {
-    const appProfile = await this.getAppProfile(vitalId);
+    const tokenPreview = token.slice(0, 12) + '...';
+    this.logger.log(`[registerToken] vitalId=${vitalId} token=${tokenPreview} platform=${platform ?? '-'} `);
+    let appProfile;
+    try {
+      appProfile = await this.getAppProfile(vitalId);
+    } catch (e) {
+      this.logger.error(`[registerToken] vitalId=${vitalId} perfil no encontrado. ¿AppProfile no existe? ${(e as Error).message}`);
+      throw e;
+    }
+    this.logger.log(`[registerToken] appProfileId=${appProfile.id} vitalId=${vitalId}`);
 
+    let deviceToken;
     const existing = await this.prisma.device_tokens.findFirst({
       where: { token, deleted_at: null },
     });
     if (existing) {
-      // El token ya existe: asegurar que apunte a este perfil
       if (existing.app_profile_id !== appProfile.id) {
-        return this.prisma.device_tokens.update({
+        this.logger.log(`[registerToken] Token ${tokenPreview} reasignado de profile ${existing.app_profile_id} -> ${appProfile.id}`);
+        deviceToken = await this.prisma.device_tokens.update({
           where: { id: existing.id },
           data: { app_profile_id: appProfile.id, platform: platform ?? null },
         });
+      } else {
+        this.logger.log(`[registerToken] Token ${tokenPreview} ya existe para profile ${appProfile.id}, id=${existing.id}`);
+        deviceToken = existing;
       }
-      return existing;
+    } else {
+      deviceToken = await this.prisma.device_tokens.create({
+        data: {
+          app_profile_id: appProfile.id,
+          token,
+          platform: platform ?? null,
+        },
+      });
+      this.logger.log(`[registerToken] NUEVO token ${tokenPreview} creado id=${deviceToken.id} profile=${appProfile.id} platform=${platform ?? '-'}`);
     }
 
-    return this.prisma.device_tokens.create({
-      data: {
-        app_profile_id: appProfile.id,
-        token,
-        platform: platform ?? null,
-      },
+    // Fix race: repush invitaciones pendientes
+    this.repushPendingInvitations(appProfile.id, vitalId).catch((e) =>
+      this.logger.warn(`[registerToken] repushPendingInvitations failed: ${(e as Error).message}`),
+    );
+
+    // También loguea conteo actual de tokens del perfil
+    const count = await this.prisma.device_tokens.count({
+      where: { app_profile_id: appProfile.id, deleted_at: null },
     });
+    this.logger.log(`[registerToken] OK vitalId=${vitalId} profile=${appProfile.id} tokens_activos=${count}`);
+
+    return deviceToken;
+  }
+
+  private async repushPendingInvitations(appProfileId: number, vitalId: string) {
+    this.logger.log(`[repush] buscando invitaciones pendientes vitalId=${vitalId} profile=${appProfileId}`);
+    const pendingInvites = await this.prisma.patient_invitations.findMany({
+      where: { invitee_vital_id: vitalId, status: 'PENDIENTE', deleted_at: null },
+      include: { patients: true },
+    });
+    this.logger.log(`[repush] encontradas ${pendingInvites.length} invitaciones pendientes`);
+    if (pendingInvites.length === 0) return;
+
+    for (const inv of pendingInvites) {
+      // Asegura que exista la fila de notificación (puede no existir si fue por email antes)
+      let notif = await this.prisma.notifications.findFirst({
+        where: {
+          app_profile_id: appProfileId,
+          type: 'INVITACION_CUIDADOR',
+          metadata: { path: ['invitation_id'], equals: inv.id },
+          deleted_at: null,
+        },
+      });
+      if (!notif) {
+        const actionLabel = inv.invitee_role === 'DOCTOR' ? 'atender a' : 'cuidar a';
+        notif = await this.prisma.notifications.create({
+          data: {
+            app_profile_id: appProfileId,
+            patient_id: inv.patient_id,
+            title: inv.invitee_role === 'DOCTOR' ? 'Invitación para atender' : 'Invitación para cuidar',
+            message: `Has sido invitado a ${actionLabel} ${inv.patients.first_name} ${inv.patients.paternal_last_name}`,
+            type: 'INVITACION_CUIDADOR',
+            metadata: { invitation_id: inv.id, patient_id: inv.patient_id },
+          },
+        });
+      }
+      // Solo re-push si aún no leída (evita spam)
+      if (notif.is_read) continue;
+
+      const tokens = await this.getTokens(appProfileId);
+      this.logger.log(`[repush] invitación ${inv.id} notif ${notif.id} is_read=${notif.is_read} tokens=${tokens.length}`);
+      await this.fcmService.send({
+        tokens,
+        title: notif.title,
+        body: notif.message,
+        data: {
+          id: String(notif.id),
+          title: notif.title,
+          body: notif.message,
+          type: 'INVITACION_CUIDADOR',
+          route: 'invitations',
+          patientId: String(inv.patient_id),
+          invitationId: String(inv.id),
+        },
+        channelId: 'vitalguard_invitations',
+        priority: 'high',
+      });
+      this.logger.log(`[repush] OK invitación ${inv.id} -> profile ${appProfileId} notif ${notif.id}`);
+    }
   }
 
   async unreadCount(vitalId: string) {

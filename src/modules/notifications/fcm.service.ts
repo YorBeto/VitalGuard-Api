@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { cert, type ServiceAccount } from 'firebase-admin';
 import { initializeApp, getApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
@@ -24,6 +24,7 @@ export interface PushMessage {
  */
 @Injectable()
 export class FcmService {
+  private readonly logger = new Logger(FcmService.name);
   private initialized = false;
 
   constructor() {
@@ -56,18 +57,18 @@ export class FcmService {
       } else if (fromEnv) {
         serviceAccount = JSON.parse(fromEnv) as ServiceAccount;
       } else {
-        console.warn(
-          '[FCM] Sin credenciales (FIREBASE_SERVICE_ACCOUNT_PATH / FIREBASE_SERVICE_ACCOUNT). Push deshabilitado.',
+        this.logger.warn(
+          'Sin credenciales (FIREBASE_SERVICE_ACCOUNT_PATH / FIREBASE_SERVICE_ACCOUNT). Push deshabilitado. device_tokens quedará vacío.',
         );
         return;
       }
 
       initializeApp({ credential: cert(serviceAccount) });
       this.initialized = true;
-      console.log('[FCM] Firebase inicializado correctamente.');
+      this.logger.log(`Firebase inicializado correctamente. project=${(serviceAccount as any).project_id ?? 'unknown'}`);
     } catch (err: any) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error('[FCM] Error inicializando Firebase:', message);
+      this.logger.error(`Error inicializando Firebase: ${message}`);
       this.initialized = false;
     }
   }
@@ -94,9 +95,15 @@ export class FcmService {
   }
 
   async send(message: PushMessage): Promise<void> {
-    if (!this.initialized || message.tokens.length === 0) {
+    if (!this.initialized) {
+      this.logger.warn(`[FCM] No inicializado. No se envía push title="${message.title}" type=${message.data?.type ?? '-'}`);
       return;
     }
+    if (message.tokens.length === 0) {
+      this.logger.warn(`[FCM] Sin tokens. No se envía push title="${message.title}" type=${message.data?.type ?? '-'}. device_tokens vacío para este perfil.`);
+      return;
+    }
+    this.logger.log(`[FCM] Enviando push title="${message.title}" type=${message.data?.type ?? '-'} tokens=${message.tokens.length} channel=${this.resolveChannel(message)}`);
     const type = message.data?.type;
     const isSos = type === 'SOS_ALERTA';
     const channelId = this.resolveChannel(message);
@@ -127,6 +134,7 @@ export class FcmService {
           },
         },
       });
+      this.logger.log(`[FCM] Resultado success=${response.successCount} failure=${response.failureCount}/${response.responses.length} title="${message.title}"`);
       if (response.failureCount > 0) {
         const invalidTokens: string[] = [];
         response.responses.forEach((r, i) => {
@@ -134,25 +142,23 @@ export class FcmService {
             invalidTokens.push(message.tokens[i]);
           }
           if (!r.success) {
-            console.warn(
+            this.logger.warn(
               `[FCM] Push fallido [${message.tokens[i].slice(0, 12)}...]: ${(r.error as any)?.code ?? r.error?.message}`,
             );
           }
         });
-        console.warn(
+        this.logger.warn(
           `[FCM] ${response.failureCount}/${response.responses.length} push fallidos. Tokens inválidos: ${invalidTokens.length}`,
         );
         if (invalidTokens.length > 0) {
-          console.warn(
-            `[FCM] Tokens para limpiar en device_tokens: ${invalidTokens.join(', ').slice(0, 200)}`,
+          this.logger.warn(
+            `[FCM] Tokens para limpiar en device_tokens: ${invalidTokens.join(', ').slice(0, 300)}`,
           );
         }
-      } else {
-        console.log(`[FCM] Push enviado a ${response.successCount} dispositivo(s)`);
       }
     } catch (err: any) {
       const message2 = err instanceof Error ? err.message : String(err);
-      console.error('[FCM] Error enviando push:', message2);
+      this.logger.error(`[FCM] Error enviando push title="${message.title}": ${message2}`);
     }
   }
 }
