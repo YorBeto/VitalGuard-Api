@@ -163,30 +163,43 @@ export class InvitationsService {
       include: { patients: true },
     });
 
-    // Si el invitado ya es usuario, notificarlo in-app
+    // Si el invitado ya es usuario, notificarlo in-app + push FCM rico
     if (dto.inviteeVitalId) {
       const inviteeProfile = await this.prisma.app_profiles.findFirst({
         where: { vital_id: dto.inviteeVitalId, deleted_at: null },
       });
       if (inviteeProfile) {
-        const message = `Has sido invitado a cuidar a ${invitation.patients.first_name} ${invitation.patients.paternal_last_name}`;
+        const isDoctor = dto.inviteeRole === 'DOCTOR';
+        const action = isDoctor ? 'atender' : 'cuidar';
+        const kinshipLabel = !isDoctor && dto.kinship ? ` como ${dto.kinship}` : '';
+        const patientFull = `${invitation.patients.first_name} ${invitation.patients.paternal_last_name}`;
+        const title = isDoctor
+          ? `Invitación para atender a ${patientFull}`
+          : `Te invitan a cuidar a ${patientFull}`;
+        const message = `Has sido invitado a ${action} a ${patientFull}${kinshipLabel}. Toca para aceptar o rechazar.`;
         const notif = await this.notifyProfile(
           inviteeProfile.id,
-          'Invitación para cuidar',
+          title,
           message,
           'INVITACION_CUIDADOR',
           patientId,
-          { invitation_id: invitation.id },
+          {
+            invitation_id: invitation.id,
+            patient_id: patientId,
+            invitee_role: dto.inviteeRole ?? 'CAREGIVER',
+          },
         );
         await this.notificationsService.pushToProfile(
           inviteeProfile.id,
-          'Invitación para cuidar',
+          title,
           message,
           this.pushData(
             notif.id,
-            'Invitación para cuidar',
+            title,
             message,
             'invitations',
+            patientId,
+            invitation.id,
           ),
         );
       }
@@ -408,15 +421,32 @@ export class InvitationsService {
         const patient = invitation.patients;
         const actionLabel =
           invitation.invitee_role === 'DOCTOR' ? 'atender a' : 'cuidar a';
-        await this.notifyProfile(
-          profile.id,
+        const title =
           invitation.invitee_role === 'DOCTOR'
             ? 'Invitación para atender'
-            : 'Invitación para cuidar',
-          `Has sido invitado a ${actionLabel} ${patient.first_name} ${patient.paternal_last_name}`,
+            : 'Invitación para cuidar';
+        const msg = `Has sido invitado a ${actionLabel} ${patient.first_name} ${patient.paternal_last_name}`;
+        const notif = await this.notifyProfile(
+          profile.id,
+          title,
+          msg,
           'INVITACION_CUIDADOR',
           invitation.patient_id,
-          { invitation_id: invitation.id },
+          { invitation_id: invitation.id, patient_id: invitation.patient_id },
+        );
+        // Push inmediato para email-invitados recién vinculados
+        await this.notificationsService.pushToProfile(
+          profile.id,
+          title,
+          msg,
+          this.pushData(
+            notif.id,
+            title,
+            msg,
+            'invitations',
+            invitation.patient_id,
+            invitation.id,
+          ),
         );
       }
     }
@@ -583,7 +613,14 @@ export class InvitationsService {
             inviterProfileId,
             title,
             message,
-            this.pushData(updated.id, title, message, 'family'),
+            this.pushData(
+              updated.id,
+              title,
+              message,
+              'invitations',
+              invitation.patient_id,
+              invitation.id,
+            ),
           );
         }
         return updated;
@@ -595,14 +632,19 @@ export class InvitationsService {
     title: string,
     body: string,
     route: string,
+    patientId?: number,
+    invitationId?: number,
   ): Record<string, string> {
-    return {
+    const data: Record<string, string> = {
       id: String(id),
       title,
       body,
       type: 'INVITACION_CUIDADOR',
       route,
     };
+    if (patientId) data['patientId'] = String(patientId);
+    if (invitationId) data['invitationId'] = String(invitationId);
+    return data;
   }
 
   async reject(vitalId: string, invitationId: number, token?: string, email?: string) {
@@ -637,7 +679,14 @@ export class InvitationsService {
         inviter.app_profile_id,
         title,
         message,
-        this.pushData(updated.id, title, message, 'family'),
+        this.pushData(
+          updated.id,
+          title,
+          message,
+          'invitations',
+          invitation.patient_id,
+          invitation.id,
+        ),
       );
     }
 

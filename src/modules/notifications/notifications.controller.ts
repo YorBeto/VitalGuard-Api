@@ -3,6 +3,7 @@ import {
   Get,
   Patch,
   Post,
+  Delete,
   Param,
   Body,
   ParseIntPipe,
@@ -64,6 +65,13 @@ export class NotificationsController {
     return this.notificationsService.findAllByUser(vitalId);
   }
 
+  @Patch('read-all')
+  @ApiOperation({ summary: 'Marcar todas las notificaciones como leídas' })
+  @ApiResponse({ status: 200, description: 'Todas marcadas como leídas' })
+  async markAllAsRead(@GetVitalId() vitalId: string) {
+    return this.notificationsService.markAllAsRead(vitalId);
+  }
+
   @Patch(':id/read')
   @ApiOperation({ summary: 'Marcar una notificación como leída' })
   @ApiResponse({ status: 200, description: 'Notificación actualizada' })
@@ -75,10 +83,13 @@ export class NotificationsController {
     return this.notificationsService.markAsRead(id, vitalId);
   }
 
-  @Patch('read-all')
-  @ApiOperation({ summary: 'Marcar todas las notificaciones como leídas' })
-  @ApiResponse({ status: 200, description: 'Todas marcadas como leídas' })
-  async markAllAsRead(@GetVitalId() vitalId: string) {
-    return this.notificationsService.markAllAsRead(vitalId);
+  @Delete('token')
+  @ApiOperation({ summary: 'Eliminar token FCM (logout)' })
+  @ApiResponse({ status: 200, description: 'Token eliminado' })
+  async removeToken(
+    @GetVitalId() vitalId: string,
+    @Body() dto: RegisterTokenDto,
+  ) {
+    return this.notificationsService.removeToken(vitalId, dto.token);
   }
 }

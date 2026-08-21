@@ -75,11 +75,21 @@ export class NotificationsService {
     data?: Record<string, string>,
   ) {
     const tokens = await this.getTokens(appProfileId);
+    const type = data?.type;
     await this.fcmService.send({
       tokens,
       title,
       body,
       data,
+      channelId:
+        type === 'SOS_ALERTA'
+          ? 'vitalguard_sos'
+          : type === 'INVITACION_CUIDADOR'
+            ? 'vitalguard_invitations'
+            : type === 'DOSIS_RECORDATORIO'
+              ? 'vitalguard_medication'
+              : undefined,
+      priority: type === 'SOS_ALERTA' ? 'high' : 'high',
     });
   }
 
@@ -89,6 +99,19 @@ export class NotificationsService {
       select: { token: true },
     });
     return rows.map((r) => r.token);
+  }
+
+  async removeToken(vitalId: string, token: string) {
+    const appProfile = await this.getAppProfile(vitalId);
+    const existing = await this.prisma.device_tokens.findFirst({
+      where: { token, app_profile_id: appProfile.id, deleted_at: null },
+    });
+    if (!existing) return { message: 'Token no encontrado' };
+    await this.prisma.device_tokens.update({
+      where: { id: existing.id },
+      data: { deleted_at: new Date() },
+    });
+    return { message: 'Token eliminado' };
   }
 
   /** Crea la fila de notificación en BD y, además, dispara el push FCM al perfil. */
@@ -103,17 +126,38 @@ export class NotificationsService {
         metadata: input.metadata ?? Prisma.JsonNull,
       },
     });
+    const data: Record<string, string> = {
+      id: String(notif.id),
+      title: input.title,
+      body: input.message,
+      type: input.type,
+      route: input.route ?? '',
+      ...(input.patientId ? { patientId: String(input.patientId) } : {}),
+      ...(input.metadata
+        ? {
+            metadata: JSON.stringify(input.metadata).slice(0, 900),
+            invitationId: String((input.metadata as any)?.invitation_id ?? ''),
+          }
+        : {}),
+    };
+    // Limpia claves vacías (FCM no acepta undefined)
+    Object.keys(data).forEach((k) => {
+      if (!data[k]) delete data[k];
+    });
     await this.fcmService.send({
       tokens: await this.getTokens(appProfileId),
       title: input.title,
       body: input.message,
-      data: {
-        id: String(notif.id),
-        title: input.title,
-        body: input.message,
-        type: input.type,
-        route: input.route ?? '',
-      },
+      data,
+      channelId:
+        input.type === 'SOS_ALERTA'
+          ? 'vitalguard_sos'
+          : input.type === 'INVITACION_CUIDADOR'
+            ? 'vitalguard_invitations'
+            : input.type === 'DOSIS_RECORDATORIO'
+              ? 'vitalguard_medication'
+              : undefined,
+      priority: input.type === 'SOS_ALERTA' ? 'high' : 'high',
     });
     return notif;
   }
