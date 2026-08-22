@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -20,11 +21,14 @@ import { AiModule } from './modules/ai/ai.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { MailModule } from './modules/mail/mail.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
+import { EmailCacheModule } from './modules/email-cache/email-cache.module';
+import { EmailCacheInterceptor } from './modules/email-cache/email-cache.interceptor';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
     PrismaModule,
+    EmailCacheModule,
     RealtimeModule,
     AuthModule,
     MailModule,
@@ -46,5 +50,11 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
     InvitationsModule,
   ],
   controllers: [],
+  providers: [
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: EmailCacheInterceptor,
+    },
+  ],
 })
 export class AppModule {}

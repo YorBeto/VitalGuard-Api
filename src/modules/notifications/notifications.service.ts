@@ -3,6 +3,7 @@ import { Prisma, notification_type } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FcmService } from './fcm.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { EmailCacheService } from '../email-cache/email-cache.service';
 
 export interface CreateNotificationInput {
   title: string;
@@ -22,6 +23,7 @@ export class NotificationsService {
     @Optional()
     @Inject(forwardRef(() => RealtimeService))
     private readonly realtimeService: RealtimeService,
+    private readonly emailCache: EmailCacheService,
   ) {}
 
   private async getAppProfile(vitalId: string) {
@@ -60,7 +62,8 @@ export class NotificationsService {
 
   async registerToken(vitalId: string, token: string, platform?: string, email?: string) {
     const tokenPreview = token.slice(0, 12) + '...';
-    this.logger.log(`[registerToken] vitalId=${vitalId} token=${tokenPreview} platform=${platform ?? '-'} `);
+    this.logger.log(`[registerToken] vitalId=${vitalId} token=${tokenPreview} platform=${platform ?? '-'} email=${email ?? '-'}`);
+    if (email) this.emailCache.put(email, vitalId);
     let appProfile;
     try {
       appProfile = await this.getPreferredAppProfile(vitalId);

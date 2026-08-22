@@ -2,7 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { cert, type ServiceAccount } from 'firebase-admin';
 import { initializeApp, getApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, isAbsolute } from 'node:path';
 
 export interface PushMessage {
   tokens: string[];
@@ -49,13 +50,41 @@ export class FcmService {
       return;
     }
 
+    this.logger.log(`[FCM] cwd=${process.cwd()} path=${fromPath ?? '-'} hasEnv=${!!fromEnv}`);
+
     try {
-      let serviceAccount: ServiceAccount;
+      let serviceAccount: ServiceAccount | null = null;
       if (fromPath) {
-        const raw = readFileSync(fromPath, 'utf-8');
+        const candidates = [
+          fromPath,
+          resolve(process.cwd(), fromPath),
+          resolve(__dirname, '../../../', fromPath.replace(/^\.\//, '')),
+          '/app/secrets/firebase-service-account.json',
+          './secrets/firebase-service-account.json',
+        ];
+        let raw: string | null = null;
+        for (const p of candidates) {
+          const abs = isAbsolute(p) ? p : resolve(process.cwd(), p);
+          if (existsSync(abs)) {
+            this.logger.log(`[FCM] Leyendo service account de ${abs}`);
+            raw = readFileSync(abs, 'utf-8');
+            break;
+          }
+          try {
+            raw = readFileSync(p, 'utf-8');
+            this.logger.log(`[FCM] Leyendo service account de ${p} (fallback)`);
+            break;
+          } catch {}
+        }
+        if (!raw) throw new Error(`No se encontró archivo en ${fromPath} (probado ${candidates.join(', ')})`);
         serviceAccount = JSON.parse(raw) as ServiceAccount;
       } else if (fromEnv) {
-        serviceAccount = JSON.parse(fromEnv) as ServiceAccount;
+        // Soporta JSON plano o base64
+        let jsonStr = fromEnv.trim();
+        if (!jsonStr.startsWith('{')) {
+          try { jsonStr = Buffer.from(jsonStr, 'base64').toString('utf-8'); } catch {}
+        }
+        serviceAccount = JSON.parse(jsonStr) as ServiceAccount;
       } else {
         this.logger.warn(
           'Sin credenciales (FIREBASE_SERVICE_ACCOUNT_PATH / FIREBASE_SERVICE_ACCOUNT). Push deshabilitado. device_tokens quedará vacío.',
@@ -63,7 +92,7 @@ export class FcmService {
         return;
       }
 
-      initializeApp({ credential: cert(serviceAccount) });
+      initializeApp({ credential: cert(serviceAccount!) });
       this.initialized = true;
       this.logger.log(`Firebase inicializado correctamente. project=${(serviceAccount as any).project_id ?? 'unknown'}`);
     } catch (err: any) {

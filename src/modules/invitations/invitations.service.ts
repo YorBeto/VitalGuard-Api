@@ -12,6 +12,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { EmailCacheService } from '../email-cache/email-cache.service';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { Prisma, notification_type } from '@prisma/client';
 
@@ -25,6 +26,7 @@ export class InvitationsService {
     private readonly mailService: MailService,
     private readonly notificationsService: NotificationsService,
     private readonly realtimeService: RealtimeService,
+    private readonly emailCache: EmailCacheService,
   ) {}
 
   private async getCaregiverByVitalId(vitalId: string) {
@@ -223,12 +225,8 @@ export class InvitationsService {
       await this.sendInvitationEmail(invitation, dto.message);
 
       // 🔔 Push inmediato por email (WS) — el invitado online recibe aviso aunque aún no tenga vital_id mapeado
-      // El móvil escucha `invitation:new` en la sala email:<correo> y hará refresh de pendientes/notificaciones
       try {
         const emailLower = dto.inviteeEmail.trim().toLowerCase();
-        // Intento de crear notificación inmediata si el invitado ya tiene app_profile con device_token registrado con ese email
-        // Busca perfiles cuyo último token se registró con ese email (si se guardó en memoria/DB)
-        // Fallback: emite a la sala de email para que el cliente haga pull
         this.realtimeService.emitToEmail(emailLower, 'invitation:new', {
           invitation_id: invitation.id,
           patient_id: invitation.patient_id,
@@ -237,8 +235,32 @@ export class InvitationsService {
           token: invitation.token,
         });
         this.logger.log(`[create] WS invitation:new emitido a email:${emailLower} invitation=${invitation.id}`);
-        // Además intenta notificar vía FCM/WS si existe perfil con ese email (best-effort: busca por vital_id ya cacheado)
-        // Si el usuario ya existe, su próximo GET /invitations/pending?email= creará la fila; este WS acelera ese flujo
+
+        // Si el invitado ya tiene cuenta (email cacheado), crea la fila notifications inmediatamente
+        const cachedVitalId = this.emailCache.getVitalId(emailLower);
+        if (cachedVitalId) {
+          const inviteeProfile = await this.prisma.app_profiles.findFirst({
+            where: { vital_id: cachedVitalId, deleted_at: null },
+          });
+          if (inviteeProfile) {
+            const isDoctor = invitation.invitee_role === 'DOCTOR';
+            const action = isDoctor ? 'atender' : 'cuidar';
+            const patientFull = `${invitation.patients.first_name} ${invitation.patients.paternal_last_name}`;
+            const title = isDoctor ? `Invitación para atender a ${patientFull}` : `Te invitan a cuidar a ${patientFull}`;
+            const message = `Has sido invitado a ${action} a ${patientFull}. Toca para aceptar o rechazar.`;
+            this.logger.log(`[create] email cache hit ${emailLower} -> vital ${cachedVitalId} profile ${inviteeProfile.id}, creando notificación inmediata`);
+            await this.notificationsService.createAndPush(inviteeProfile.id, {
+              title,
+              message,
+              type: 'INVITACION_CUIDADOR',
+              patientId: invitation.patient_id,
+              metadata: { invitation_id: invitation.id, patient_id: invitation.patient_id, invitee_role: invitation.invitee_role },
+              route: 'invitations',
+            });
+          }
+        } else {
+          this.logger.log(`[create] email cache miss para ${emailLower}, se deja solo WS email. Se creará notificación cuando el invitado haga GET /invitations/pending?email=`);
+        }
       } catch (e) {
         this.logger.warn(`[create] fallo emit WS email: ${(e as Error).message}`);
       }
