@@ -18,7 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { GetVitalId } from '../../common/decorators/get-user.decorator';
+import { GetVitalId, GetEmail } from '../../common/decorators/get-user.decorator';
 import { RegisterTokenDto } from './dto/register-token.dto';
 
 @ApiTags('Notifications (Notificaciones)')
@@ -38,12 +38,17 @@ export class NotificationsController {
   @ApiResponse({ status: 201, description: 'Token registrado' })
   async registerToken(
     @GetVitalId() vitalId: string,
+    @GetEmail() email: string | undefined,
     @Body() dto: RegisterTokenDto,
   ) {
+    // email param se usa para repush de invitaciones por correo (JWT a veces no trae email)
+    const bodyEmail = (dto as any)?.email as string | undefined;
+    const effectiveEmail = email ?? bodyEmail;
     return this.notificationsService.registerToken(
       vitalId,
       dto.token,
       dto.platform,
+      effectiveEmail,
     );
   }
 

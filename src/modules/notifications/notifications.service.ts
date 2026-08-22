@@ -30,12 +30,36 @@ export class NotificationsService {
     return appProfile;
   }
 
-  async registerToken(vitalId: string, token: string, platform?: string) {
+  /** Obtiene todos los app_profile ids de un vital_id (un usuario puede tener varios roles) */
+  private async getAppProfileIds(vitalId: string): Promise<number[]> {
+    const profiles = await this.prisma.app_profiles.findMany({
+      where: { vital_id: vitalId, deleted_at: null },
+      select: { id: true },
+    });
+    if (profiles.length === 0) {
+      throw new NotFoundException('Perfil de usuario no encontrado');
+    }
+    return profiles.map((p) => p.id);
+  }
+
+  /** Prefiere el perfil CAREGIVER para registro de token */
+  private async getPreferredAppProfile(vitalId: string) {
+    const profiles = await this.prisma.app_profiles.findMany({
+      where: { vital_id: vitalId, deleted_at: null },
+      include: { roles: true },
+      orderBy: { id: 'asc' },
+    });
+    if (profiles.length === 0) throw new NotFoundException('Perfil de usuario no encontrado');
+    const caregiver = profiles.find((p) => p.roles?.name === 'CAREGIVER');
+    return caregiver ?? profiles[0];
+  }
+
+  async registerToken(vitalId: string, token: string, platform?: string, email?: string) {
     const tokenPreview = token.slice(0, 12) + '...';
     this.logger.log(`[registerToken] vitalId=${vitalId} token=${tokenPreview} platform=${platform ?? '-'} `);
     let appProfile;
     try {
-      appProfile = await this.getAppProfile(vitalId);
+      appProfile = await this.getPreferredAppProfile(vitalId);
     } catch (e) {
       this.logger.error(`[registerToken] vitalId=${vitalId} perfil no encontrado. ¿AppProfile no existe? ${(e as Error).message}`);
       throw e;
@@ -51,41 +75,67 @@ export class NotificationsService {
         this.logger.log(`[registerToken] Token ${tokenPreview} reasignado de profile ${existing.app_profile_id} -> ${appProfile.id}`);
         deviceToken = await this.prisma.device_tokens.update({
           where: { id: existing.id },
-          data: { app_profile_id: appProfile.id, platform: platform ?? null },
+          data: { app_profile_id: appProfile.id, platform: platform ?? null, deleted_at: null, updated_at: new Date() },
         });
       } else {
         this.logger.log(`[registerToken] Token ${tokenPreview} ya existe para profile ${appProfile.id}, id=${existing.id}`);
-        deviceToken = existing;
+        // Reactivar si estaba soft-deleted previamente y actualizar platform
+        if (existing.deleted_at) {
+          deviceToken = await this.prisma.device_tokens.update({
+            where: { id: existing.id },
+            data: { deleted_at: null, platform: platform ?? null },
+          });
+        } else {
+          deviceToken = existing;
+        }
       }
     } else {
-      deviceToken = await this.prisma.device_tokens.create({
-        data: {
-          app_profile_id: appProfile.id,
-          token,
-          platform: platform ?? null,
-        },
+      // Si el token estaba soft-deleted con mismo valor, Prisma unique fallaría -> buscar incluyendo deleted
+      const softDeleted = await this.prisma.device_tokens.findFirst({
+        where: { token },
       });
-      this.logger.log(`[registerToken] NUEVO token ${tokenPreview} creado id=${deviceToken.id} profile=${appProfile.id} platform=${platform ?? '-'}`);
+      if (softDeleted) {
+        deviceToken = await this.prisma.device_tokens.update({
+          where: { id: softDeleted.id },
+          data: { app_profile_id: appProfile.id, platform: platform ?? null, deleted_at: null, updated_at: new Date() },
+        });
+        this.logger.log(`[registerToken] Token ${tokenPreview} reactivado id=${deviceToken.id} profile=${appProfile.id}`);
+      } else {
+        deviceToken = await this.prisma.device_tokens.create({
+          data: {
+            app_profile_id: appProfile.id,
+            token,
+            platform: platform ?? null,
+          },
+        });
+        this.logger.log(`[registerToken] NUEVO token ${tokenPreview} creado id=${deviceToken.id} profile=${appProfile.id} platform=${platform ?? '-'}`);
+      }
     }
 
-    // Fix race: repush invitaciones pendientes
-    this.repushPendingInvitations(appProfile.id, vitalId).catch((e) =>
+    // Fix race: repush invitaciones pendientes (vital_id + email)
+    this.repushPendingInvitations(appProfile.id, vitalId, email).catch((e) =>
       this.logger.warn(`[registerToken] repushPendingInvitations failed: ${(e as Error).message}`),
     );
 
-    // También loguea conteo actual de tokens del perfil
+    // También loguea conteo actual de tokens del usuario (todos sus perfiles)
+    const allIds = await this.getAppProfileIds(vitalId);
     const count = await this.prisma.device_tokens.count({
-      where: { app_profile_id: appProfile.id, deleted_at: null },
+      where: { app_profile_id: { in: allIds }, deleted_at: null },
     });
-    this.logger.log(`[registerToken] OK vitalId=${vitalId} profile=${appProfile.id} tokens_activos=${count}`);
+    this.logger.log(`[registerToken] OK vitalId=${vitalId} profile=${appProfile.id} tokens_activos=${count} (en ${allIds.length} perfiles)`);
 
     return deviceToken;
   }
 
-  private async repushPendingInvitations(appProfileId: number, vitalId: string) {
-    this.logger.log(`[repush] buscando invitaciones pendientes vitalId=${vitalId} profile=${appProfileId}`);
+  private async repushPendingInvitations(appProfileId: number, vitalId: string, email?: string) {
+    this.logger.log(`[repush] buscando invitaciones pendientes vitalId=${vitalId} email=${email ?? '-'} profile=${appProfileId}`);
+    // Buscar por vital_id y, si tenemos email, también por invitee_email (caso invitaciones por correo)
+    const or: any[] = [{ invitee_vital_id: vitalId }];
+    if (email && email.trim()) {
+      or.push({ invitee_email: { equals: email.trim(), mode: 'insensitive' } });
+    }
     const pendingInvites = await this.prisma.patient_invitations.findMany({
-      where: { invitee_vital_id: vitalId, status: 'PENDIENTE', deleted_at: null },
+      where: { status: 'PENDIENTE', deleted_at: null, OR: or },
       include: { patients: true },
     });
     this.logger.log(`[repush] encontradas ${pendingInvites.length} invitaciones pendientes`);
@@ -140,10 +190,10 @@ export class NotificationsService {
   }
 
   async unreadCount(vitalId: string) {
-    const appProfile = await this.getAppProfile(vitalId);
+    const ids = await this.getAppProfileIds(vitalId);
     const count = await this.prisma.notifications.count({
       where: {
-        app_profile_id: appProfile.id,
+        app_profile_id: { in: ids },
         is_read: false,
         deleted_at: null,
       },
@@ -151,7 +201,7 @@ export class NotificationsService {
     return { count };
   }
 
-  /** Envía push FCM a todos los dispositivos de un perfil. No lanza si no hay tokens. */
+  /** Envía push FCM a todos los dispositivos de un vital_id (agrega tokens de todos sus perfiles). No lanza si no hay tokens. */
   async pushToProfile(
     appProfileId: number,
     title: string,
@@ -178,17 +228,28 @@ export class NotificationsService {
   }
 
   private async getTokens(appProfileId: number): Promise<string[]> {
+    // Agrega tokens de TODOS los perfiles del mismo vital_id para evitar desvío por rol
+    const profile = await this.prisma.app_profiles.findUnique({
+      where: { id: appProfileId },
+      select: { vital_id: true },
+    });
+    if (!profile) return [];
+    const allIds = await this.prisma.app_profiles.findMany({
+      where: { vital_id: profile.vital_id, deleted_at: null },
+      select: { id: true },
+    });
+    const ids = allIds.map((p) => p.id);
     const rows = await this.prisma.device_tokens.findMany({
-      where: { app_profile_id: appProfileId, deleted_at: null },
+      where: { app_profile_id: { in: ids }, deleted_at: null },
       select: { token: true },
     });
     return rows.map((r) => r.token);
   }
 
   async removeToken(vitalId: string, token: string) {
-    const appProfile = await this.getAppProfile(vitalId);
+    const ids = await this.getAppProfileIds(vitalId);
     const existing = await this.prisma.device_tokens.findFirst({
-      where: { token, app_profile_id: appProfile.id, deleted_at: null },
+      where: { token, app_profile_id: { in: ids }, deleted_at: null },
     });
     if (!existing) return { message: 'Token no encontrado' };
     await this.prisma.device_tokens.update({
@@ -274,10 +335,10 @@ export class NotificationsService {
   }
 
   async findAllByUser(vitalId: string) {
-    const appProfile = await this.getAppProfile(vitalId);
+    const ids = await this.getAppProfileIds(vitalId);
 
     return this.prisma.notifications.findMany({
-      where: { app_profile_id: appProfile.id, deleted_at: null },
+      where: { app_profile_id: { in: ids }, deleted_at: null },
       orderBy: { created_at: 'desc' },
       include: {
         patients: {
@@ -288,10 +349,10 @@ export class NotificationsService {
   }
 
   async markAsRead(id: number, vitalId: string) {
-    const appProfile = await this.getAppProfile(vitalId);
+    const ids = await this.getAppProfileIds(vitalId);
 
     const notification = await this.prisma.notifications.findFirst({
-      where: { id, app_profile_id: appProfile.id, deleted_at: null },
+      where: { id, app_profile_id: { in: ids }, deleted_at: null },
     });
     if (!notification) {
       throw new NotFoundException('Notificación no encontrada');
@@ -304,11 +365,11 @@ export class NotificationsService {
   }
 
   async markAllAsRead(vitalId: string) {
-    const appProfile = await this.getAppProfile(vitalId);
+    const ids = await this.getAppProfileIds(vitalId);
 
     await this.prisma.notifications.updateMany({
       where: {
-        app_profile_id: appProfile.id,
+        app_profile_id: { in: ids },
         is_read: false,
         deleted_at: null,
       },
