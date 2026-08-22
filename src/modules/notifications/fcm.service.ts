@@ -42,23 +42,27 @@ export class FcmService {
   }
 
   private initialize() {
-    const fromPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
-    const fromEnv = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const rawPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+    const fromPath = rawPath?.replace(/^["']|["']$/g, '').trim();
+    const fromEnv = process.env.FIREBASE_SERVICE_ACCOUNT?.replace(/^["']|["']$/g, '').trim();
 
     if (this.hasApp()) {
       this.initialized = true;
       return;
     }
 
-    this.logger.log(`[FCM] cwd=${process.cwd()} path=${fromPath ?? '-'} hasEnv=${!!fromEnv}`);
+    this.logger.log(`[FCM] cwd=${process.cwd()} path=${fromPath ?? '-'} rawPath=${rawPath ?? '-'} hasEnv=${!!fromEnv}`);
 
     try {
       let serviceAccount: ServiceAccount | null = null;
       if (fromPath) {
+        const clean = fromPath.replace(/^\.\//, '');
         const candidates = [
           fromPath,
           resolve(process.cwd(), fromPath),
-          resolve(__dirname, '../../../', fromPath.replace(/^\.\//, '')),
+          resolve(process.cwd(), clean),
+          resolve(__dirname, '../../../', clean),
+          resolve(__dirname, '../../../secrets/firebase-service-account.json'),
           '/app/secrets/firebase-service-account.json',
           './secrets/firebase-service-account.json',
         ];
