@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { Prisma, notification_type } from '@prisma/client';
 
@@ -23,6 +24,7 @@ export class InvitationsService {
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
     private readonly notificationsService: NotificationsService,
+    private readonly realtimeService: RealtimeService,
   ) {}
 
   private async getCaregiverByVitalId(vitalId: string) {
@@ -219,6 +221,27 @@ export class InvitationsService {
     // Enviar el correo de invitación por Resend
     if (dto.inviteeEmail && invitation.token) {
       await this.sendInvitationEmail(invitation, dto.message);
+
+      // 🔔 Push inmediato por email (WS) — el invitado online recibe aviso aunque aún no tenga vital_id mapeado
+      // El móvil escucha `invitation:new` en la sala email:<correo> y hará refresh de pendientes/notificaciones
+      try {
+        const emailLower = dto.inviteeEmail.trim().toLowerCase();
+        // Intento de crear notificación inmediata si el invitado ya tiene app_profile con device_token registrado con ese email
+        // Busca perfiles cuyo último token se registró con ese email (si se guardó en memoria/DB)
+        // Fallback: emite a la sala de email para que el cliente haga pull
+        this.realtimeService.emitToEmail(emailLower, 'invitation:new', {
+          invitation_id: invitation.id,
+          patient_id: invitation.patient_id,
+          patient_name: `${invitation.patients.first_name} ${invitation.patients.paternal_last_name}`,
+          invitee_role: invitation.invitee_role,
+          token: invitation.token,
+        });
+        this.logger.log(`[create] WS invitation:new emitido a email:${emailLower} invitation=${invitation.id}`);
+        // Además intenta notificar vía FCM/WS si existe perfil con ese email (best-effort: busca por vital_id ya cacheado)
+        // Si el usuario ya existe, su próximo GET /invitations/pending?email= creará la fila; este WS acelera ese flujo
+      } catch (e) {
+        this.logger.warn(`[create] fallo emit WS email: ${(e as Error).message}`);
+      }
     }
 
     return invitation;

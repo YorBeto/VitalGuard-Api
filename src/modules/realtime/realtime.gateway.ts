@@ -69,6 +69,13 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       await client.join(room);
       this.logger.log(`[WS] ${client.id} conectado vitalId=${vitalId} -> ${room}`);
 
+      // Sala por email para invitaciones por correo (push inmediato sin vital_id)
+      if (payload.email) {
+        const emailRoom = `email:${payload.email.trim().toLowerCase()}`;
+        await client.join(emailRoom);
+        this.logger.log(`[WS] ${client.id} también unido a ${emailRoom}`);
+      }
+
       // Enviar estado inicial: unread count + últimas 20 notificaciones
       const allIds = await this.prisma.app_profiles.findMany({
         where: { vital_id: vitalId, deleted_at: null },

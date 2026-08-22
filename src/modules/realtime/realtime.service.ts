@@ -15,12 +15,24 @@ export class RealtimeService {
     return `vital:${vitalId}`;
   }
 
+  private emailRoom(email: string) {
+    return `email:${email.trim().toLowerCase()}`;
+  }
+
   emitToVital(vitalId: string, event: string, payload: unknown) {
     if (!this.server) {
       this.logger.warn(`Server no inicializado, no se emite ${event} -> ${vitalId}`);
       return;
     }
     const r = this.room(vitalId);
+    const count = this.server.sockets.adapter.rooms.get(r)?.size ?? 0;
+    this.logger.log(`[WS emit] ${event} -> ${r} (${count} sockets) `);
+    this.server.to(r).emit(event, payload);
+  }
+
+  emitToEmail(email: string, event: string, payload: unknown) {
+    if (!this.server) return;
+    const r = this.emailRoom(email);
     const count = this.server.sockets.adapter.rooms.get(r)?.size ?? 0;
     this.logger.log(`[WS emit] ${event} -> ${r} (${count} sockets) `);
     this.server.to(r).emit(event, payload);
