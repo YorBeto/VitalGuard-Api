@@ -1,7 +1,8 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Inject, forwardRef, Optional } from '@nestjs/common';
 import { Prisma, notification_type } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FcmService } from './fcm.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 export interface CreateNotificationInput {
   title: string;
@@ -18,6 +19,9 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly fcmService: FcmService,
+    @Optional()
+    @Inject(forwardRef(() => RealtimeService))
+    private readonly realtimeService: RealtimeService,
   ) {}
 
   private async getAppProfile(vitalId: string) {
@@ -169,6 +173,9 @@ export class NotificationsService {
 
       const tokens = await this.getTokens(appProfileId);
       this.logger.log(`[repush] invitación ${inv.id} notif ${notif.id} is_read=${notif.is_read} tokens=${tokens.length}`);
+      // WS en tiempo real además de FCM
+      const prof = await this.prisma.app_profiles.findUnique({ where: { id: appProfileId }, select: { vital_id: true } });
+      if (prof) this.realtimeService.emitToVital(prof.vital_id, 'notification:new', notif);
       await this.fcmService.send({
         tokens,
         title: notif.title,
@@ -201,13 +208,30 @@ export class NotificationsService {
     return { count };
   }
 
-  /** Envía push FCM a todos los dispositivos de un vital_id (agrega tokens de todos sus perfiles). No lanza si no hay tokens. */
+  /** Envía push FCM + WS a todos los dispositivos de un vital_id. No lanza si no hay tokens. */
   async pushToProfile(
     appProfileId: number,
     title: string,
     body: string,
     data?: Record<string, string>,
   ) {
+    // WS: emitir evento liviano (para casos donde la notificación ya existe en BD)
+    try {
+      const profile = await this.prisma.app_profiles.findUnique({
+        where: { id: appProfileId },
+        select: { vital_id: true },
+      });
+      if (profile) {
+        // Si data trae id, lo usamos para buscar la notificación real
+        if (data?.id) {
+          const notif = await this.prisma.notifications.findUnique({ where: { id: Number(data.id) } });
+          if (notif) this.realtimeService.emitToVital(profile.vital_id, 'notification:new', notif);
+          else this.realtimeService.emitToVital(profile.vital_id, 'notification:new', { title, message: body, type: data?.type, ...data });
+        } else {
+          this.realtimeService.emitToVital(profile.vital_id, 'notification:new', { title, message: body, type: data?.type, ...data });
+        }
+      }
+    } catch {}
     const tokens = await this.getTokens(appProfileId);
     const type = data?.type;
     await this.fcmService.send({
@@ -259,7 +283,32 @@ export class NotificationsService {
     return { message: 'Token eliminado' };
   }
 
-  /** Crea la fila de notificación en BD y, además, dispara el push FCM al perfil. */
+  private async emitRealtime(appProfileId: number, notif: any) {
+    if (!this.realtimeService) return;
+    try {
+      const profile = await this.prisma.app_profiles.findUnique({
+        where: { id: appProfileId },
+        select: { vital_id: true },
+      });
+      if (!profile) return;
+      // WS: notificación completa
+      this.realtimeService.emitToVital(profile.vital_id, 'notification:new', notif);
+      // WS: unread count actualizado
+      const allIds = await this.prisma.app_profiles.findMany({
+        where: { vital_id: profile.vital_id, deleted_at: null },
+        select: { id: true },
+      });
+      const ids = allIds.map((p) => p.id);
+      const count = await this.prisma.notifications.count({
+        where: { app_profile_id: { in: ids }, is_read: false, deleted_at: null },
+      });
+      this.realtimeService.emitToVital(profile.vital_id, 'notification:unread-count', { count });
+    } catch (e) {
+      this.logger.warn(`[realtime] emit falló: ${(e as Error).message}`);
+    }
+  }
+
+  /** Crea la fila de notificación en BD y, además, dispara el push FCM + WS al perfil. */
   async createAndPush(appProfileId: number, input: CreateNotificationInput) {
     const notif = await this.prisma.notifications.create({
       data: {
@@ -271,6 +320,9 @@ export class NotificationsService {
         metadata: input.metadata ?? Prisma.JsonNull,
       },
     });
+    // WS inmediato (sin esperar FCM)
+    this.emitRealtime(appProfileId, notif).catch(() => {});
+
     const data: Record<string, string> = {
       id: String(notif.id),
       title: input.title,
@@ -358,10 +410,17 @@ export class NotificationsService {
       throw new NotFoundException('Notificación no encontrada');
     }
 
-    return this.prisma.notifications.update({
+    const updated = await this.prisma.notifications.update({
       where: { id },
       data: { is_read: true },
     });
+    // WS: notificar actualización de lectura
+    this.realtimeService.emitToVital(vitalId, 'notification:read', { id });
+    const count = await this.prisma.notifications.count({
+      where: { app_profile_id: { in: ids }, is_read: false, deleted_at: null },
+    });
+    this.realtimeService.emitToVital(vitalId, 'notification:unread-count', { count });
+    return updated;
   }
 
   async markAllAsRead(vitalId: string) {
@@ -375,6 +434,8 @@ export class NotificationsService {
       },
       data: { is_read: true },
     });
+    this.realtimeService.emitToVital(vitalId, 'notification:read-all', {});
+    this.realtimeService.emitToVital(vitalId, 'notification:unread-count', { count: 0 });
 
     return { message: 'Todas las notificaciones marcadas como leídas' };
   }

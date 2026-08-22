@@ -19,11 +19,13 @@ import { AlexaModule } from './modules/alexa/alexa.module';
 import { AiModule } from './modules/ai/ai.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { MailModule } from './modules/mail/mail.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
     PrismaModule,
+    RealtimeModule,
     AuthModule,
     MailModule,
     AppProfilesModule,
