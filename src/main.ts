@@ -18,7 +18,7 @@ async function bootstrap() {
 
   // Configuración de CORS
   app.enableCors({
-    origin: '*', // Permitir solicitudes desde cualquier origen
+    origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type, Accept, Authorization',
   });
@@ -41,11 +41,14 @@ async function bootstrap() {
 
   const document = SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config));
 
-  // Iniciar tanto los listeners MQTT como el servidor HTTP REST
-  await app.startAllMicroservices();
-  await app.listen(process.env.PORT ?? 3000, '0.0.0.0');
+  // 1. Levantar PRIMERO el servidor HTTP (prioriza process.env.PORT)
+  const port = process.env.PORT || 3001;
+  await app.listen(port, '0.0.0.0');
+  console.log(`🚀 HTTP API corriendo en: http://localhost:${port}/api/docs`);
 
-  console.log(`🚀 HTTP API corriendo en: http://localhost:${process.env.PORT ?? 3000}/api/docs`);
-  console.log(`📡 Cliente MQTT conectado escuchando eventos del ESP32...`);
+  // 2. Iniciar MQTT de forma asíncrona sin bloquear el hilo principal HTTP
+  app.startAllMicroservices()
+    .then(() => console.log(`📡 Cliente MQTT conectado escuchando eventos del ESP32...`))
+    .catch((err) => console.warn(`⚠️ No se pudo conectar a MQTT, pero el servidor HTTP/Alexa sigue activo.`));
 }
 bootstrap();

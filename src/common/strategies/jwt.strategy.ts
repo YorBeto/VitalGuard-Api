@@ -1,9 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { ConfigService } from '@nestjs/config';
 
 export interface JwtPayload {
-  sub: string; // Contiene el vital_id (UUID)
+  sub: string;
   email: string;
   person_id?: string;
   firstName?: string;
@@ -15,13 +16,12 @@ export interface JwtPayload {
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-  constructor() {
+  constructor(private readonly configService: ConfigService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey:
-        process.env.JWT_SECRET ||
-        'c16f28b5fc222a4700fe9e5caaa3e3c2936cc68cb70f248aada34b75fd8c35d9',
+      // Leemos de forma segura el secreto usando ConfigService
+      secretOrKey: configService.get<string>('JWT_SECRET') || 'c16f28b5fc222a4700fe9e5caaa3e3c2936cc68cb70f248aada34b75fd8c35d9',
     });
   }
 
@@ -32,7 +32,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       );
     }
 
-    // Retorna vital_id para ser consumido por GetVitalId() y por el servicio de check-status
     return {
       vital_id: payload.sub,
       vitalId: payload.sub,

@@ -491,5 +491,16 @@ ALTER TABLE "voice_messages" ADD CONSTRAINT "voice_messages_sender_caregiver_id_
 -- AddForeignKey
 ALTER TABLE "notifications" ADD CONSTRAINT "notifications_app_profile_id_fkey" FOREIGN KEY ("app_profile_id") REFERENCES "app_profiles"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
+-- ==========================================
+-- SEMILLA DE ROLES INICIALES (SEED)
+-- ==========================================
+INSERT INTO "roles" ("id", "name", "app_name", "is_system") 
+VALUES 
+(1, 'Patient', 'MOBILE', true),
+(2, 'Doctor', 'WEB', true),
+(3, 'Caregiver', 'MOBILE', true),
+(4, 'Admin', 'WEB', true)
+ON CONFLICT ("id") DO NOTHING;
+
 -- AddForeignKey
 ALTER TABLE "notifications" ADD CONSTRAINT "notifications_patient_id_fkey" FOREIGN KEY ("patient_id") REFERENCES "patients"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
