@@ -23,6 +23,8 @@ import { MailModule } from './modules/mail/mail.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { EmailCacheModule } from './modules/email-cache/email-cache.module';
 import { EmailCacheInterceptor } from './modules/email-cache/email-cache.interceptor';
+import { AdminModule } from './modules/admin/admin.module';
+import { ProfilesModule } from './modules/profiles/profiles.module';
 
 @Module({
   imports: [
@@ -48,6 +50,8 @@ import { EmailCacheInterceptor } from './modules/email-cache/email-cache.interce
     AlexaModule,
     AiModule,
     InvitationsModule,
+    AdminModule,
+    ProfilesModule,
   ],
   controllers: [],
   providers: [
