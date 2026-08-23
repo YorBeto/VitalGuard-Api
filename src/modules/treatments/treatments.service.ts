@@ -1,10 +1,16 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DevicesService } from '../devices/devices.service';
 import { CreateTreatmentDto, UpdateTreatmentDto } from './dto/treatment.dto';
 
 @Injectable()
 export class TreatmentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(TreatmentsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly devicesService: DevicesService,
+  ) {}
 
   async findByPatient(patientId: number) {
     return this.prisma.treatments.findMany({
@@ -56,7 +62,7 @@ export class TreatmentsService {
       throw new NotFoundException('Paciente no encontrado');
     }
 
-    return this.prisma.treatments.create({
+    const treatment = await this.prisma.treatments.create({
       data: {
         patient_id: dto.patientId,
         start_date: new Date(dto.startDate),
@@ -64,6 +70,10 @@ export class TreatmentsService {
         status: dto.status ?? 'Activo',
       },
     });
+
+    await this.notifyDeviceConfig(dto.patientId);
+
+    return treatment;
   }
 
   async update(id: number, dto: UpdateTreatmentDto) {
@@ -74,12 +84,32 @@ export class TreatmentsService {
       throw new NotFoundException('Tratamiento no encontrado');
     }
 
-    return this.prisma.treatments.update({
+    const updatedTreatment = await this.prisma.treatments.update({
       where: { id },
       data: {
         ...(dto.endDate !== undefined && { end_date: new Date(dto.endDate) }),
         ...(dto.status !== undefined && { status: dto.status }),
       },
     });
+
+    await this.notifyDeviceConfig(treatment.patient_id);
+
+    return updatedTreatment;
+  }
+
+  private async notifyDeviceConfig(patientId: number): Promise<void> {
+    try {
+      const device = await this.prisma.devices.findFirst({
+        where: { patient_id: patientId, deleted_at: null },
+      });
+
+      if (device) {
+        await this.devicesService.sendConfigToDevice(device.unique_code, patientId);
+      }
+    } catch (error: any) {
+      this.logger.error(
+        `Error al enviar configuración MQTT al dispositivo del paciente ${patientId}: ${error.message}`,
+      );
+    }
   }
 }

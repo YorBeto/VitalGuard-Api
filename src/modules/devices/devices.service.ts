@@ -13,7 +13,7 @@ export class DevicesService {
     @Inject('MQTT_CLIENT') private readonly mqttClient: ClientProxy,
   ) {}
 
-  private formatDeviceCode(code: string): string {
+  public formatDeviceCode(code: string): string {
     if (!code) return '';
     const cleanCode = code.replace(/[- ]/g, '').toUpperCase();
     if (cleanCode.length === 6) {
@@ -96,30 +96,32 @@ export class DevicesService {
       },
     });
 
-    const medications = treatments.flatMap((t) =>
-      t.treatment_details.flatMap((td) =>
-        td.schedules.map((s) => {
+    const medicamentos = treatments.flatMap((t) =>
+      t.treatment_details.map((td) => {
+        const horarios = td.schedules.map((s) => {
           const time = s.time_of_day as unknown as Date;
-          return {
-            nombre: td.medications.name,
-            dosis: td.dose_info,
-            hora: `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`,
-          };
-        }),
-      ),
+          return `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
+        });
+
+        return {
+          dosisId: td.id,
+          nombre: td.medications?.name ?? 'Medicamento',
+          dosis: td.dose_info ?? '',
+          compartimento: td.compartment_number ?? 1,
+          horarios,
+        };
+      }),
     );
 
-    const firstSchedule = treatments
-      .flatMap((t) => t.treatment_details)
-      .flatMap((td) => td.schedules)[0];
+    const allHorarios = medicamentos.flatMap((m) => m.horarios).sort();
+    const proximaToma = allHorarios.length > 0 ? allHorarios[0] : '--:--';
 
-    let proximaToma = '00:00';
-    if (firstSchedule) {
-      const time = firstSchedule.time_of_day as unknown as Date;
-      proximaToma = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
-    }
+    const config = {
+      proximaToma,
+      sosCountdownSeg: 10,
+      medicamentos,
+    };
 
-    const config = { proximaToma, medications };
     this.mqttClient.emit(`vitalguard/${deviceId}/config`, config);
     this.logger.log(`📤 Config enviada a ${deviceId}: ${JSON.stringify(config)}`);
   }
@@ -144,7 +146,6 @@ export class DevicesService {
       return;
     }
 
-    // Buscar el log Pendiente más reciente del paciente
     const treatments = await this.prisma.treatments.findMany({
       where: { patient_id: device.patient_id, deleted_at: null },
       select: { id: true },
@@ -180,7 +181,6 @@ export class DevicesService {
 
     this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como Confirmado`);
 
-    // Notificar al cuidador
     if (device.responsible_caregiver_id) {
       const caregiver = await this.prisma.caregivers.findFirst({
         where: { id: device.responsible_caregiver_id, deleted_at: null },
@@ -209,7 +209,6 @@ export class DevicesService {
       return;
     }
 
-    // Crear evento SOS
     const sosEvent = await this.prisma.sos_events.create({
       data: {
         patient_id: device.patient_id,
@@ -220,7 +219,6 @@ export class DevicesService {
 
     this.logger.log(`🚨 SOS CREADO: Evento #${sosEvent.id} para paciente ${device.patient_id}`);
 
-    // Notificar al cuidador responsable
     if (device.responsible_caregiver_id) {
       const caregiver = await this.prisma.caregivers.findFirst({
         where: { id: device.responsible_caregiver_id, deleted_at: null },

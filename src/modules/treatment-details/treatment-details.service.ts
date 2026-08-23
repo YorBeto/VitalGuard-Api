@@ -1,10 +1,16 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DevicesService } from '../devices/devices.service';
 import { CreateTreatmentDetailDto } from './dto/treatment-detail.dto';
 
 @Injectable()
 export class TreatmentDetailsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(TreatmentDetailsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly devicesService: DevicesService,
+  ) {}
 
   async findByTreatment(treatmentId: number) {
     return this.prisma.treatment_details.findMany({
@@ -31,7 +37,7 @@ export class TreatmentDetailsService {
       throw new NotFoundException('Medicamento no encontrado');
     }
 
-    return this.prisma.treatment_details.create({
+    const detail = await this.prisma.treatment_details.create({
       data: {
         treatment_id: dto.treatmentId,
         medication_id: dto.medicationId,
@@ -45,6 +51,11 @@ export class TreatmentDetailsService {
       },
       include: { medications: true },
     });
+
+    // Enviar configuración actualizada al ESP32
+    await this.notifyDeviceByTreatment(dto.treatmentId);
+
+    return detail;
   }
 
   async remove(id: number) {
@@ -60,6 +71,31 @@ export class TreatmentDetailsService {
       data: { deleted_at: new Date() },
     });
 
+    // Enviar configuración actualizada al ESP32
+    await this.notifyDeviceByTreatment(detail.treatment_id);
+
     return { message: 'Detalle de tratamiento eliminado exitosamente' };
+  }
+
+  private async notifyDeviceByTreatment(treatmentId: number): Promise<void> {
+    try {
+      const treatment = await this.prisma.treatments.findUnique({
+        where: { id: treatmentId },
+        select: { patient_id: true },
+      });
+      if (!treatment) return;
+
+      const device = await this.prisma.devices.findFirst({
+        where: { patient_id: treatment.patient_id, deleted_at: null },
+      });
+
+      if (device) {
+        await this.devicesService.sendConfigToDevice(device.unique_code, treatment.patient_id);
+      }
+    } catch (error: any) {
+      this.logger.error(
+        `Error MQTT al notificar tratamiento ${treatmentId}: ${error.message}`,
+      );
+    }
   }
 }
