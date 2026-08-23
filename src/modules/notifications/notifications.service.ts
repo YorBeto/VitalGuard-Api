@@ -417,12 +417,16 @@ export class NotificationsService {
       where: { id },
       data: { is_read: true },
     });
-    // WS: notificar actualización de lectura
-    this.realtimeService.emitToVital(vitalId, 'notification:read', { id });
-    const count = await this.prisma.notifications.count({
-      where: { app_profile_id: { in: ids }, is_read: false, deleted_at: null },
-    });
-    this.realtimeService.emitToVital(vitalId, 'notification:unread-count', { count });
+    // WS: notificar actualización de lectura (fail-safe)
+    try {
+      this.realtimeService.emitToVital(vitalId, 'notification:read', { id });
+      const count = await this.prisma.notifications.count({
+        where: { app_profile_id: { in: ids }, is_read: false, deleted_at: null },
+      });
+      this.realtimeService.emitToVital(vitalId, 'notification:unread-count', { count });
+    } catch (e) {
+      this.logger.warn(`[markAsRead] WS emit falló: ${(e as Error).message}`);
+    }
     return updated;
   }
 
@@ -437,8 +441,12 @@ export class NotificationsService {
       },
       data: { is_read: true },
     });
-    this.realtimeService.emitToVital(vitalId, 'notification:read-all', {});
-    this.realtimeService.emitToVital(vitalId, 'notification:unread-count', { count: 0 });
+    try {
+      this.realtimeService.emitToVital(vitalId, 'notification:read-all', {});
+      this.realtimeService.emitToVital(vitalId, 'notification:unread-count', { count: 0 });
+    } catch (e) {
+      this.logger.warn(`[markAllAsRead] WS emit falló: ${(e as Error).message}`);
+    }
 
     return { message: 'Todas las notificaciones marcadas como leídas' };
   }

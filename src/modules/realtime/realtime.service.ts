@@ -20,22 +20,36 @@ export class RealtimeService {
   }
 
   emitToVital(vitalId: string, event: string, payload: unknown) {
-    if (!this.server) {
-      this.logger.warn(`Server no inicializado, no se emite ${event} -> ${vitalId}`);
-      return;
+    try {
+      if (!this.server) {
+        this.logger.warn(`Server no inicializado, no se emite ${event} -> ${vitalId}`);
+        return;
+      }
+      const r = this.room(vitalId);
+      let count = 0;
+      try {
+        count = (this.server as any).sockets?.adapter?.rooms?.get?.(r)?.size ?? 0;
+      } catch {}
+      this.logger.log(`[WS emit] ${event} -> ${r} (${count} sockets) `);
+      this.server.to(r).emit(event, payload);
+    } catch (e) {
+      this.logger.warn(`[WS emit] fallo ${event} -> ${vitalId}: ${(e as Error).message}`);
     }
-    const r = this.room(vitalId);
-    const count = this.server.sockets.adapter.rooms.get(r)?.size ?? 0;
-    this.logger.log(`[WS emit] ${event} -> ${r} (${count} sockets) `);
-    this.server.to(r).emit(event, payload);
   }
 
   emitToEmail(email: string, event: string, payload: unknown) {
-    if (!this.server) return;
-    const r = this.emailRoom(email);
-    const count = this.server.sockets.adapter.rooms.get(r)?.size ?? 0;
-    this.logger.log(`[WS emit] ${event} -> ${r} (${count} sockets) `);
-    this.server.to(r).emit(event, payload);
+    try {
+      if (!this.server) return;
+      const r = this.emailRoom(email);
+      let count = 0;
+      try {
+        count = (this.server as any).sockets?.adapter?.rooms?.get?.(r)?.size ?? 0;
+      } catch {}
+      this.logger.log(`[WS emit] ${event} -> ${r} (${count} sockets) `);
+      this.server.to(r).emit(event, payload);
+    } catch (e) {
+      this.logger.warn(`[WS emit] fallo ${email}: ${(e as Error).message}`);
+    }
   }
 
   /** Broadcast a lista de vitalIds */
