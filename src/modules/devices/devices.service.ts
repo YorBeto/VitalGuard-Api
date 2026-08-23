@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SosEventsService } from '../sos-events/sos-events.service';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { LinkDeviceDto } from './dto/link-device.dto';
 
@@ -11,6 +12,7 @@ export class DevicesService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject('MQTT_CLIENT') private readonly mqttClient: ClientProxy,
+    private readonly sosEventsService: SosEventsService,
   ) {}
 
   public formatDeviceCode(code: string): string {
@@ -204,36 +206,13 @@ export class DevicesService {
     const device = await this.prisma.devices.findFirst({
       where: { unique_code: formattedCode, deleted_at: null },
     });
+
     if (!device?.patient_id) {
       this.logger.warn(`⚠️ SOS: Dispositivo ${formattedCode} no tiene paciente asignado`);
       return;
     }
 
-    const sosEvent = await this.prisma.sos_events.create({
-      data: {
-        patient_id: device.patient_id,
-        device_id: device.id,
-        status: 'Activo',
-      },
-    });
-
-    this.logger.log(`🚨 SOS CREADO: Evento #${sosEvent.id} para paciente ${device.patient_id}`);
-
-    if (device.responsible_caregiver_id) {
-      const caregiver = await this.prisma.caregivers.findFirst({
-        where: { id: device.responsible_caregiver_id, deleted_at: null },
-      });
-      if (caregiver) {
-        await this.prisma.notifications.create({
-          data: {
-            app_profile_id: caregiver.app_profile_id,
-            patient_id: device.patient_id,
-            title: 'Alerta SOS',
-            message: 'El paciente activó la alerta de emergencia desde el dispositivo',
-            type: 'SOS_ALERTA',
-          },
-        });
-      }
-    }
+    this.logger.log(`🚨 SOS RECIBIDO de dispositivo ${formattedCode} para paciente #${device.patient_id}`);
+    return this.sosEventsService.create(device.patient_id);
   }
 }
