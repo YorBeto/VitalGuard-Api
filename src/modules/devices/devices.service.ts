@@ -93,35 +93,51 @@ export class DevicesService {
       include: {
         treatment_details: {
           where: { deleted_at: null },
-          include: { medications: true, schedules: { where: { deleted_at: null } } },
+          include: {
+            medications: true,
+            schedules: { where: { deleted_at: null } },
+          },
         },
       },
     });
 
-    const medicamentos = treatments.flatMap((t) =>
-      t.treatment_details.map((td) => {
-        const horarios = td.schedules.map((s) => {
-          const time = s.time_of_day as unknown as Date;
-          return `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
-        });
+    const allMeds: Array<{
+      dosisId: number;
+      nombre: string;
+      dosis: string | null;
+      compartimento: number | null;
+      horarios: string[];
+    }> = [];
 
-        return {
-          dosisId: td.id,
-          nombre: td.medications?.name ?? 'Medicamento',
-          dosis: td.dose_info ?? '',
-          compartimento: td.compartment_number ?? 1,
-          horarios,
-        };
-      }),
+    for (const tr of treatments) {
+      for (const td of tr.treatment_details) {
+        for (const s of td.schedules) {
+          const time = s.time_of_day as unknown as Date;
+          const formatted = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
+          allMeds.push({
+            dosisId: td.id,
+            nombre: td.medications?.name ?? 'Medicamento',
+            dosis: td.dose_info ?? null,
+            compartimento: td.compartment_number ?? null,
+            horarios: [formatted],
+          });
+        }
+      }
+    }
+
+    // Remover duplicados por dosisId (mismo medicamento en distinto horario)
+    const uniqueMeds = allMeds.filter(
+      (med, index, self) =>
+        self.findIndex((m) => m.dosisId === med.dosisId) === index,
     );
 
-    const allHorarios = medicamentos.flatMap((m) => m.horarios).sort();
+    const allHorarios = uniqueMeds.flatMap((m) => m.horarios).sort();
     const proximaToma = allHorarios.length > 0 ? allHorarios[0] : '--:--';
 
     const config = {
       proximaToma,
       sosCountdownSeg: 10,
-      medicamentos,
+      medicamentos: uniqueMeds,
     };
 
     this.mqttClient.emit(`vitalguard/${deviceId}/config`, config);
