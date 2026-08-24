@@ -125,7 +125,6 @@ export class DevicesService {
       }
     }
 
-    // Remover duplicados por dosisId (mismo medicamento en distinto horario)
     const uniqueMeds = allMeds.filter(
       (med, index, self) =>
         self.findIndex((m) => m.dosisId === med.dosisId) === index,
@@ -211,11 +210,10 @@ export class DevicesService {
     });
 
     if (!pendingLog) {
-      // Debug adicional: buscar si hay ALGUN log (no solo Pendiente) para este paciente
+      // Debug adicional: buscar si hay algún log asociado a estos schedules
       const anyLog = await this.prisma.medication_logs.findFirst({
         where: {
           schedule_id: { in: allScheduleIds },
-          patient_id: device.patient_id,
           deleted_at: null,
         },
         orderBy: { scheduled_datetime: 'desc' },
