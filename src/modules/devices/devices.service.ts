@@ -164,40 +164,80 @@ export class DevicesService {
       return;
     }
 
+    this.logger.log(`🔍 [TOMA_CONFIRMADA] Iniciando para dispositivo ${formattedCode}, patientId: ${device.patient_id}`);
+
+    // 1. Obtener todos los treatments del paciente
     const treatments = await this.prisma.treatments.findMany({
       where: { patient_id: device.patient_id, deleted_at: null },
-      select: { id: true },
+      select: {
+        id: true,
+        treatment_details: {
+          select: {
+            id: true,
+            schedules: {
+              select: {
+                id: true,
+              },
+            },
+          },
+        },
+      },
     });
-    const treatmentIds = treatments.map((t) => t.id);
+    this.logger.log(`📋 [TOMA_CONFIRMADA] Tratamientos encontrados: ${treatments.length}`);
 
-    const details = await this.prisma.treatment_details.findMany({
-      where: { treatment_id: { in: treatmentIds }, deleted_at: null },
-      select: { id: true },
-    });
-    const detailIds = details.map((d) => d.id);
+    // 2. Recolectar todos los schedule IDs de TODOS los treatments
+    const allScheduleIds: number[] = [];
+    for (const tr of treatments) {
+      if (tr.treatment_details) {
+        for (const td of tr.treatment_details) {
+          if (td.schedules) {
+            for (const s of td.schedules) {
+              allScheduleIds.push(s.id);
+            }
+          }
+        }
+      }
+    }
+    this.logger.log(`📅 [TOMA_CONFIRMADA] Schedule IDs recolectados: ${allScheduleIds.length}`, allScheduleIds);
 
-    const schedules = await this.prisma.schedules.findMany({
-      where: { treatment_detail_id: { in: detailIds }, deleted_at: null },
-      select: { id: true },
-    });
-    const scheduleIds = schedules.map((s) => s.id);
-
+    // 3. Buscar el log Pendiente MÁS RECIENTE asociado a alguno de estos schedules
     const pendingLog = await this.prisma.medication_logs.findFirst({
-      where: { schedule_id: { in: scheduleIds }, status: 'Pendiente', deleted_at: null },
+      where: {
+        schedule_id: { in: allScheduleIds },
+        status: 'Pendiente',
+        deleted_at: null,
+      },
       orderBy: { scheduled_datetime: 'desc' },
     });
 
     if (!pendingLog) {
+      // Debug adicional: buscar si hay ALGUN log (no solo Pendiente) para este paciente
+      const anyLog = await this.prisma.medication_logs.findFirst({
+        where: {
+          schedule_id: { in: allScheduleIds },
+          patient_id: device.patient_id,
+          deleted_at: null,
+        },
+        orderBy: { scheduled_datetime: 'desc' },
+      });
       this.logger.warn(`⚠️ No hay logs Pendientes para paciente ${device.patient_id}`);
+      this.logger.log(`📝 [TOMA_CONFIRMADA] Último log encontrado:`, anyLog ? {
+        id: anyLog.id,
+        status: anyLog.status,
+        schedule_id: anyLog.schedule_id,
+        takenAt: anyLog.actual_taken_datetime,
+      } : 'No hay ningún log asociado a estos schedules');
       return;
     }
+
+    this.logger.log(`🎯 [TOMA_CONFIRMADA] Log encontrado: #${pendingLog.id}, status actual: ${pendingLog.status}`);
 
     await this.prisma.medication_logs.update({
       where: { id: pendingLog.id },
       data: { status: 'Confirmado', actual_taken_datetime: new Date() },
     });
 
-    this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como Confirmado`);
+    this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como Confirmado. Tomada a las ${pendingLog.actual_taken_datetime}`);
 
     if (device.responsible_caregiver_id) {
       const caregiver = await this.prisma.caregivers.findFirst({
