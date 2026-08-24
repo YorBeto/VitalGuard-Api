@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { DevicesService } from './devices.service';
 import { DevicesController } from './devices.controller';
+import {SosEventsModule} from "../sos-events/sos-events.module";
+
 
 @Module({
   imports: [
@@ -18,6 +20,7 @@ import { DevicesController } from './devices.controller';
         }),
       },
     ]),
+    SosEventsModule,
   ],
   providers: [DevicesService],
   controllers: [DevicesController],

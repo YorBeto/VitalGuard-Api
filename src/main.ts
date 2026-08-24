@@ -1,11 +1,17 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { Transport, MicroserviceOptions } from '@nestjs/microservices';
+import { HttpLoggerInterceptor } from './common/interceptors/http-logger.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: ['log', 'error', 'warn', 'debug', 'verbose'],
+  });
+  // Logs robustos para docker logs -f vitalguard-backend
+  app.useGlobalInterceptors(new HttpLoggerInterceptor());
+  const logger = new Logger('Bootstrap');
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -44,11 +50,12 @@ async function bootstrap() {
   // PRIMERO levantamos el servidor HTTP para garantizar que los endpoints funcionen
   const port = process.env.PORT ?? 3000;
   await app.listen(port, '0.0.0.0');
-  console.log(`🚀 HTTP API corriendo en: http://localhost:${port}/api/docs`);
+  logger.log(`🚀 HTTP API corriendo en: http://localhost:${port}/api/docs`);
+  logger.log(`[FCM] Service account path: ${process.env.FIREBASE_SERVICE_ACCOUNT_PATH ?? 'no configurado'}`);
 
   // LUEGO intentamos iniciar los microservicios MQTT sin bloquear el hilo HTTP
   app.startAllMicroservices()
-    .then(() => console.log(`📡 Cliente MQTT conectado a: ${mqttUrl}`))
-    .catch((err) => console.warn(`⚠️ No se pudo conectar a MQTT (${mqttUrl}). Modo HTTP activo.`));
+    .then(() => logger.log(`📡 Cliente MQTT conectado a: ${mqttUrl}`))
+    .catch(() => logger.warn(`⚠️ No se pudo conectar a MQTT (${mqttUrl}). Modo HTTP activo.`));
 }
 bootstrap();

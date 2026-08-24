@@ -3,6 +3,7 @@ import {
   Get,
   Patch,
   Post,
+  Delete,
   Param,
   Body,
   ParseIntPipe,
@@ -17,7 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { GetVitalId } from '../../common/decorators/get-user.decorator';
+import { GetVitalId, GetEmail } from '../../common/decorators/get-user.decorator';
 import { RegisterTokenDto } from './dto/register-token.dto';
 
 @ApiTags('Notifications (Notificaciones)')
@@ -37,12 +38,17 @@ export class NotificationsController {
   @ApiResponse({ status: 201, description: 'Token registrado' })
   async registerToken(
     @GetVitalId() vitalId: string,
+    @GetEmail() email: string | undefined,
     @Body() dto: RegisterTokenDto,
   ) {
+    // email param se usa para repush de invitaciones por correo (JWT a veces no trae email)
+    const bodyEmail = (dto as any)?.email as string | undefined;
+    const effectiveEmail = email ?? bodyEmail;
     return this.notificationsService.registerToken(
       vitalId,
       dto.token,
       dto.platform,
+      effectiveEmail,
     );
   }
 
@@ -64,6 +70,13 @@ export class NotificationsController {
     return this.notificationsService.findAllByUser(vitalId);
   }
 
+  @Patch('read-all')
+  @ApiOperation({ summary: 'Marcar todas las notificaciones como leídas' })
+  @ApiResponse({ status: 200, description: 'Todas marcadas como leídas' })
+  async markAllAsRead(@GetVitalId() vitalId: string) {
+    return this.notificationsService.markAllAsRead(vitalId);
+  }
+
   @Patch(':id/read')
   @ApiOperation({ summary: 'Marcar una notificación como leída' })
   @ApiResponse({ status: 200, description: 'Notificación actualizada' })
@@ -75,10 +88,13 @@ export class NotificationsController {
     return this.notificationsService.markAsRead(id, vitalId);
   }
 
-  @Patch('read-all')
-  @ApiOperation({ summary: 'Marcar todas las notificaciones como leídas' })
-  @ApiResponse({ status: 200, description: 'Todas marcadas como leídas' })
-  async markAllAsRead(@GetVitalId() vitalId: string) {
-    return this.notificationsService.markAllAsRead(vitalId);
+  @Delete('token')
+  @ApiOperation({ summary: 'Eliminar token FCM (logout)' })
+  @ApiResponse({ status: 200, description: 'Token eliminado' })
+  async removeToken(
+    @GetVitalId() vitalId: string,
+    @Body() dto: RegisterTokenDto,
+  ) {
+    return this.notificationsService.removeToken(vitalId, dto.token);
   }
 }

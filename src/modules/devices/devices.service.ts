@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SosEventsService } from '../sos-events/sos-events.service';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { LinkDeviceDto } from './dto/link-device.dto';
 
@@ -11,9 +12,10 @@ export class DevicesService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject('MQTT_CLIENT') private readonly mqttClient: ClientProxy,
+    private readonly sosEventsService: SosEventsService,
   ) {}
 
-  private formatDeviceCode(code: string): string {
+  public formatDeviceCode(code: string): string {
     if (!code) return '';
     const cleanCode = code.replace(/[- ]/g, '').toUpperCase();
     if (cleanCode.length === 6) {
@@ -91,35 +93,53 @@ export class DevicesService {
       include: {
         treatment_details: {
           where: { deleted_at: null },
-          include: { medications: true, schedules: { where: { deleted_at: null } } },
+          include: {
+            medications: true,
+            schedules: { where: { deleted_at: null } },
+          },
         },
       },
     });
 
-    const medications = treatments.flatMap((t) =>
-      t.treatment_details.flatMap((td) =>
-        td.schedules.map((s) => {
+    const allMeds: Array<{
+      dosisId: number;
+      nombre: string;
+      dosis: string | null;
+      compartimento: number | null;
+      horarios: string[];
+    }> = [];
+
+    for (const tr of treatments) {
+      for (const td of tr.treatment_details) {
+        for (const s of td.schedules) {
           const time = s.time_of_day as unknown as Date;
-          return {
-            nombre: td.medications.name,
-            dosis: td.dose_info,
-            hora: `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`,
-          };
-        }),
-      ),
-    );
-
-    const firstSchedule = treatments
-      .flatMap((t) => t.treatment_details)
-      .flatMap((td) => td.schedules)[0];
-
-    let proximaToma = '00:00';
-    if (firstSchedule) {
-      const time = firstSchedule.time_of_day as unknown as Date;
-      proximaToma = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
+          const formatted = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
+          allMeds.push({
+            dosisId: td.id,
+            nombre: td.medications?.name ?? 'Medicamento',
+            dosis: td.dose_info ?? null,
+            compartimento: td.compartment_number ?? null,
+            horarios: [formatted],
+          });
+        }
+      }
     }
 
-    const config = { proximaToma, medications };
+    // Remover duplicados por dosisId (mismo medicamento en distinto horario)
+    const uniqueMeds = allMeds.filter(
+      (med, index, self) =>
+        self.findIndex((m) => m.dosisId === med.dosisId) === index,
+    );
+
+    const allHorarios = uniqueMeds.flatMap((m) => m.horarios).sort();
+    const proximaToma = allHorarios.length > 0 ? allHorarios[0] : '--:--';
+
+    const config = {
+      proximaToma,
+      sosCountdownSeg: 10,
+      medicamentos: uniqueMeds,
+    };
+
     this.mqttClient.emit(`vitalguard/${deviceId}/config`, config);
     this.logger.log(`📤 Config enviada a ${deviceId}: ${JSON.stringify(config)}`);
   }
@@ -144,7 +164,6 @@ export class DevicesService {
       return;
     }
 
-    // Buscar el log Pendiente más reciente del paciente
     const treatments = await this.prisma.treatments.findMany({
       where: { patient_id: device.patient_id, deleted_at: null },
       select: { id: true },
@@ -180,7 +199,6 @@ export class DevicesService {
 
     this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como Confirmado`);
 
-    // Notificar al cuidador
     if (device.responsible_caregiver_id) {
       const caregiver = await this.prisma.caregivers.findFirst({
         where: { id: device.responsible_caregiver_id, deleted_at: null },
@@ -204,38 +222,13 @@ export class DevicesService {
     const device = await this.prisma.devices.findFirst({
       where: { unique_code: formattedCode, deleted_at: null },
     });
+
     if (!device?.patient_id) {
       this.logger.warn(`⚠️ SOS: Dispositivo ${formattedCode} no tiene paciente asignado`);
       return;
     }
 
-    // Crear evento SOS
-    const sosEvent = await this.prisma.sos_events.create({
-      data: {
-        patient_id: device.patient_id,
-        device_id: device.id,
-        status: 'Activo',
-      },
-    });
-
-    this.logger.log(`🚨 SOS CREADO: Evento #${sosEvent.id} para paciente ${device.patient_id}`);
-
-    // Notificar al cuidador responsable
-    if (device.responsible_caregiver_id) {
-      const caregiver = await this.prisma.caregivers.findFirst({
-        where: { id: device.responsible_caregiver_id, deleted_at: null },
-      });
-      if (caregiver) {
-        await this.prisma.notifications.create({
-          data: {
-            app_profile_id: caregiver.app_profile_id,
-            patient_id: device.patient_id,
-            title: 'Alerta SOS',
-            message: 'El paciente activó la alerta de emergencia desde el dispositivo',
-            type: 'SOS_ALERTA',
-          },
-        });
-      }
-    }
+    this.logger.log(`🚨 SOS RECIBIDO de dispositivo ${formattedCode} para paciente #${device.patient_id}`);
+    return this.sosEventsService.create(device.patient_id);
   }
 }

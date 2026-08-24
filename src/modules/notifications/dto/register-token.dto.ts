@@ -17,4 +17,12 @@ export class RegisterTokenDto {
   @IsString()
   @IsOptional()
   platform?: string;
+
+  @ApiPropertyOptional({
+    example: 'cuidador@correo.com',
+    description: 'Email del usuario (fallback si el JWT no trae email, para vincular invitaciones por correo)',
+  })
+  @IsString()
+  @IsOptional()
+  email?: string;
 }

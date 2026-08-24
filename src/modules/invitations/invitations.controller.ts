@@ -56,8 +56,10 @@ export class InvitationsController {
   @ApiResponse({ status: 200, description: 'Lista de invitaciones pendientes' })
   async findPending(
     @GetVitalId() vitalId: string,
-    @GetEmail() email?: string,
+    @GetEmail() jwtEmail?: string,
+    @Query('email') queryEmail?: string,
   ) {
+    const email = jwtEmail ?? queryEmail;
     return this.invitationsService.findPending(vitalId, email);
   }
 
@@ -97,15 +99,18 @@ export class InvitationsController {
     required: false,
     description: 'Token requerido para aceptar invitaciones enviadas por email',
   })
+  @ApiQuery({ name: 'email', required: false, description: 'Email del invitado (fallback si JWT no trae email)' })
   @ApiResponse({ status: 200, description: 'Invitación aceptada' })
   @ApiResponse({ status: 403, description: 'Sin permiso o token inválido' })
   @ApiResponse({ status: 410, description: 'Invitación expirada' })
   async accept(
     @GetVitalId() vitalId: string,
-    @GetEmail() email: string | undefined,
+    @GetEmail() jwtEmail: string | undefined,
     @Param('id', ParseIntPipe) id: number,
     @Query('token') token?: string,
+    @Query('email') queryEmail?: string,
   ) {
+    const email = jwtEmail ?? queryEmail;
     return this.invitationsService.accept(vitalId, id, token, email);
   }
 
@@ -117,13 +122,16 @@ export class InvitationsController {
     description:
       'Token requerido para rechazar invitaciones enviadas por email',
   })
+  @ApiQuery({ name: 'email', required: false, description: 'Email del invitado (fallback)' })
   @ApiResponse({ status: 200, description: 'Invitación rechazada' })
   async reject(
     @GetVitalId() vitalId: string,
-    @GetEmail() email: string | undefined,
+    @GetEmail() jwtEmail: string | undefined,
     @Param('id', ParseIntPipe) id: number,
     @Query('token') token?: string,
+    @Query('email') queryEmail?: string,
   ) {
+    const email = jwtEmail ?? queryEmail;
     return this.invitationsService.reject(vitalId, id, token, email);
   }
 
