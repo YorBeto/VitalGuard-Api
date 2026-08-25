@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   ParseIntPipe,
@@ -61,5 +62,13 @@ export class TreatmentsController {
     @Body() dto: UpdateTreatmentDto,
   ) {
     return this.treatmentsService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Eliminar un tratamiento (soft-delete en cascada)' })
+  @ApiResponse({ status: 200, description: 'Tratamiento eliminado' })
+  @ApiResponse({ status: 404, description: 'Tratamiento no encontrado' })
+  async remove(@Param('id', ParseIntPipe) id: number) {
+    return this.treatmentsService.remove(id);
   }
 }

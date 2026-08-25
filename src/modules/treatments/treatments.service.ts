@@ -87,7 +87,7 @@ export class TreatmentsService {
     const updatedTreatment = await this.prisma.treatments.update({
       where: { id },
       data: {
-        ...(dto.endDate !== undefined && { end_date: new Date(dto.endDate) }),
+        ...(dto.endDate !== undefined && { end_date: dto.endDate ? new Date(dto.endDate) : null }),
         ...(dto.status !== undefined && { status: dto.status }),
       },
     });
@@ -95,6 +95,58 @@ export class TreatmentsService {
     await this.notifyDeviceConfig(treatment.patient_id);
 
     return updatedTreatment;
+  }
+
+  async remove(id: number) {
+    const treatment = await this.prisma.treatments.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!treatment) {
+      throw new NotFoundException('Tratamiento no encontrado');
+    }
+
+    const now = new Date();
+
+    // Soft-delete tratamiento
+    await this.prisma.treatments.update({
+      where: { id },
+      data: { deleted_at: now },
+    });
+
+    // Soft-delete cascada: detalles -> horarios -> logs
+    const details = await this.prisma.treatment_details.findMany({
+      where: { treatment_id: id, deleted_at: null },
+      select: { id: true },
+    });
+
+    if (details.length > 0) {
+      const detailIds = details.map((d) => d.id);
+      await this.prisma.treatment_details.updateMany({
+        where: { id: { in: detailIds } },
+        data: { deleted_at: now },
+      });
+
+      const schedules = await this.prisma.schedules.findMany({
+        where: { treatment_detail_id: { in: detailIds }, deleted_at: null },
+        select: { id: true },
+      });
+
+      if (schedules.length > 0) {
+        const scheduleIds = schedules.map((s) => s.id);
+        await this.prisma.schedules.updateMany({
+          where: { id: { in: scheduleIds } },
+          data: { deleted_at: now },
+        });
+        await this.prisma.medication_logs.updateMany({
+          where: { schedule_id: { in: scheduleIds }, deleted_at: null },
+          data: { deleted_at: now },
+        });
+      }
+    }
+
+    await this.notifyDeviceConfig(treatment.patient_id);
+
+    return { message: 'Tratamiento eliminado exitosamente' };
   }
 
   private async notifyDeviceConfig(patientId: number): Promise<void> {
