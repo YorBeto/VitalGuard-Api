@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   UseGuards,
@@ -19,6 +20,8 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { LinkDeviceDto } from './dto/link-device.dto';
 import { SendCommandDto } from './dto/device-command.dto';
+import { UpdateResponsibleDto } from './dto/update-responsible.dto';
+import { GetVitalId } from '../../common/decorators/get-user.decorator';
 
 @ApiTags('Devices (Dispositivos)')
 @Controller('devices')
@@ -73,6 +76,23 @@ export class DevicesController {
   async sendCommand(@Body() dto: SendCommandDto) {
     await this.devicesService.sendCommand(dto.deviceId, dto.accion, dto.payload);
     return { enviado: true, deviceId: dto.deviceId, accion: dto.accion };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/responsible')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Cambiar responsable del pastillero',
+    description: 'Solo el responsable actual puede transferir. Requiere que el nuevo cuidador esté vinculado al paciente.',
+  })
+  @ApiBody({ type: UpdateResponsibleDto })
+  async updateResponsible(
+    @Param('id') id: string,
+    @Body() dto: UpdateResponsibleDto,
+    @GetVitalId() vitalId: string,
+  ) {
+    const updated = await this.devicesService.updateResponsible(+id, dto.responsibleCaregiverId, vitalId);
+    return { actualizado: true, device: updated };
   }
 
   // ═══════════════════════════════════════════════════════════

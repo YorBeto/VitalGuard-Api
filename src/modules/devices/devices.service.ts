@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SosEventsService } from '../sos-events/sos-events.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { LinkDeviceDto } from './dto/link-device.dto';
 
@@ -13,6 +14,7 @@ export class DevicesService {
     private readonly prisma: PrismaService,
     @Inject('MQTT_CLIENT') private readonly mqttClient: ClientProxy,
     private readonly sosEventsService: SosEventsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   public formatDeviceCode(code: string): string {
@@ -69,11 +71,25 @@ export class DevicesService {
       );
     }
 
+    // Auto-set responsable si no se manda: usa el primer cuidador vinculado al paciente (creador)
+    let responsibleId = dto.responsibleCaregiverId ?? null;
+    if (responsibleId == null) {
+      if (device.responsible_caregiver_id) {
+        responsibleId = device.responsible_caregiver_id;
+      } else {
+        const link = await this.prisma.caregiver_patient.findFirst({
+          where: { patient_id: dto.patientId, deleted_at: null },
+          orderBy: { created_at: 'asc' },
+        });
+        if (link) responsibleId = link.caregiver_id;
+      }
+    }
+
     const updated = await this.prisma.devices.update({
       where: { id: device.id },
       data: {
         patient_id: dto.patientId,
-        responsible_caregiver_id: dto.responsibleCaregiverId ?? null,
+        responsible_caregiver_id: responsibleId,
       },
     });
 
@@ -81,6 +97,38 @@ export class DevicesService {
     await this.sendConfigToDevice(formattedCode, dto.patientId);
 
     return updated;
+  }
+
+  async updateResponsible(deviceId: number, newCaregiverId: number, vitalId: string) {
+    const device = await this.prisma.devices.findFirst({
+      where: { id: deviceId, deleted_at: null },
+    });
+    if (!device?.patient_id) throw new NotFoundException('Dispositivo no encontrado o sin paciente');
+
+    const appProfile = await this.prisma.app_profiles.findFirst({
+      where: { vital_id: vitalId, deleted_at: null },
+    });
+    if (!appProfile) throw new NotFoundException('Perfil no encontrado');
+    const callerCaregiver = await this.prisma.caregivers.findFirst({
+      where: { app_profile_id: appProfile.id, deleted_at: null },
+    });
+    if (!callerCaregiver) throw new ForbiddenException('No tienes perfil de cuidador');
+
+    // Permiso: solo el responsable actual puede cambiar (si hay responsable). Si NULL, cualquier vinculado puede reclamar.
+    if (device.responsible_caregiver_id != null && device.responsible_caregiver_id !== callerCaregiver.id) {
+      throw new ForbiddenException('Solo el responsable actual puede transferir el pastillero');
+    }
+
+    // Valida que el nuevo responsable esté vinculado al paciente
+    const link = await this.prisma.caregiver_patient.findFirst({
+      where: { caregiver_id: newCaregiverId, patient_id: device.patient_id, deleted_at: null },
+    });
+    if (!link) throw new NotFoundException('El cuidador no está vinculado al paciente');
+
+    return this.prisma.devices.update({
+      where: { id: deviceId },
+      data: { responsible_caregiver_id: newCaregiverId },
+    });
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -237,21 +285,18 @@ export class DevicesService {
 
     this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como ${status}. Tomada a las ${pendingLog.actual_taken_datetime}`);
 
-    if (device.responsible_caregiver_id) {
-      const caregiver = await this.prisma.caregivers.findFirst({
-        where: { id: device.responsible_caregiver_id, deleted_at: null },
+    // Notifica a TODOS los cuidadores vinculados (decisión usuario: notificaciones para todos)
+    const profileIds = await this.notificationsService.caregiverProfilesForPatient(device.patient_id);
+    for (const pid of profileIds) {
+      await this.prisma.notifications.create({
+        data: {
+          app_profile_id: pid,
+          patient_id: device.patient_id,
+          title: 'Toma confirmada',
+          message: 'El paciente confirmó la toma de su medicamento desde el dispositivo',
+          type: 'DOSIS_RECORDATORIO',
+        },
       });
-      if (caregiver) {
-        await this.prisma.notifications.create({
-          data: {
-            app_profile_id: caregiver.app_profile_id,
-            patient_id: device.patient_id,
-            title: 'Toma confirmada',
-            message: 'El paciente confirmó la toma de su medicamento desde el dispositivo',
-            type: 'DOSIS_RECORDATORIO',
-          },
-        });
-      }
     }
   }
 
@@ -373,30 +418,26 @@ export class DevicesService {
     // Audio incorrecto
     await this.sendCommand(formattedCode, 'REPRODUCIR_AUDIO', { audio: 'compartimento_incorrecto' });
 
-    // Notificación a cuidadores (reusa DOSIS_RECORDATORIO para no migrar prod)
-    if (device.responsible_caregiver_id) {
-      const caregiver = await this.prisma.caregivers.findFirst({
-        where: { id: device.responsible_caregiver_id, deleted_at: null },
+    // Notificación a TODOS los cuidadores vinculados (reusa DOSIS_RECORDATORIO para no migrar prod)
+    const profileIds2 = await this.notificationsService.caregiverProfilesForPatient(device.patient_id);
+    for (const pid of profileIds2) {
+      await this.prisma.notifications.create({
+        data: {
+          app_profile_id: pid,
+          patient_id: device.patient_id,
+          title,
+          message,
+          type: 'DOSIS_RECORDATORIO',
+          metadata: {
+            device_code: formattedCode,
+            compartimento_abierto: compartmentNumber,
+            compartimentos_esperados: expectedSet,
+            fuera_ventana: pendingLogs.length === 0 && expectedSet.length === 0,
+          } as any,
+        },
       });
-      if (caregiver) {
-        await this.prisma.notifications.create({
-          data: {
-            app_profile_id: caregiver.app_profile_id,
-            patient_id: device.patient_id,
-            title,
-            message,
-            type: 'DOSIS_RECORDATORIO',
-            metadata: {
-              device_code: formattedCode,
-              compartimento_abierto: compartmentNumber,
-              compartimentos_esperados: expectedSet,
-              fuera_ventana: pendingLogs.length === 0 && expectedSet.length === 0,
-            } as any,
-          },
-        });
-        this.logger.log(`📩 Notificación compartimento enviada a caregiver ${caregiver.id}`);
-      }
     }
+    if (profileIds2.length) this.logger.log(`📩 Notificación compartimento enviada a ${profileIds2.length} cuidadores`);
   }
 
   async handleSosAlert(deviceId: string) {
