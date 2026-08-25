@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Delete,
+  Patch,
   Body,
   Param,
   ParseIntPipe,
@@ -17,7 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { TreatmentDetailsService } from './treatment-details.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CreateTreatmentDetailDto } from './dto/treatment-detail.dto';
+import { CreateTreatmentDetailDto, UpdateTreatmentDetailDto } from './dto/treatment-detail.dto';
 
 @ApiTags('Treatment Details (Detalles de Tratamiento)')
 @ApiBearerAuth()
@@ -44,6 +45,15 @@ export class TreatmentDetailsController {
   @ApiResponse({ status: 404, description: 'Tratamiento o medicamento no encontrado' })
   async create(@Body() dto: CreateTreatmentDetailDto) {
     return this.treatmentDetailsService.create(dto);
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Actualizar un detalle de tratamiento y recalcular end_date del tratamiento (max)' })
+  @ApiBody({ type: UpdateTreatmentDetailDto })
+  @ApiResponse({ status: 200, description: 'Detalle actualizado' })
+  @ApiResponse({ status: 404, description: 'Detalle no encontrado' })
+  async update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateTreatmentDetailDto) {
+    return this.treatmentDetailsService.update(id, dto);
   }
 
   @Delete(':id')

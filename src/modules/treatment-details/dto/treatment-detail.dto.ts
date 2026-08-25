@@ -70,3 +70,55 @@ export class CreateTreatmentDetailDto {
   @IsOptional()
   isExternal?: boolean;
 }
+
+export class UpdateTreatmentDetailDto {
+  @ApiPropertyOptional({ example: '1 tableta', description: 'Información de dosis' })
+  @IsString()
+  @IsOptional()
+  doseInfo?: string;
+
+  @ApiPropertyOptional({ example: 8, description: 'Frecuencia en horas' })
+  @IsInt()
+  @Min(1)
+  @Max(72)
+  @IsOptional()
+  frequencyHours?: number;
+
+  @ApiPropertyOptional({ example: '08:00:00', description: 'Hora de la primera toma (HH:mm:ss)' })
+  @IsString()
+  @IsOptional()
+  firstTakeTime?: string;
+
+  @ApiPropertyOptional({ example: '2026-12-31', description: 'Fecha de fin (ISO date)' })
+  @IsDateString()
+  @IsOptional()
+  endDate?: string | null;
+
+  @ApiPropertyOptional({
+    enum: medication_status,
+    example: 'En_curso',
+    description: 'Estado del detalle del tratamiento',
+  })
+  @IsEnum(medication_status)
+  @IsOptional()
+  status?: medication_status;
+
+  @ApiPropertyOptional({ example: 1, description: 'Número de compartimento del dispositivo' })
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  @IsOptional()
+  compartmentNumber?: number;
+
+  @ApiPropertyOptional({ example: false, description: 'Si es medicamento externo' })
+  @IsBoolean()
+  @IsOptional()
+  isExternal?: boolean;
+
+  @ApiPropertyOptional({ example: 1, description: 'ID del medicamento' })
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
+  @IsOptional()
+  medicationId?: number;
+}
