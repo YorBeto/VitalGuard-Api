@@ -33,15 +33,21 @@ export class MedicationLogsController {
   @Get('recent/:patientId')
   @ApiOperation({ summary: 'Logs recientes de medicación de un paciente' })
   @ApiResponse({ status: 200, description: 'Lista de logs ordenados por fecha' })
-  async findRecent(@Param('patientId', ParseIntPipe) patientId: number) {
-    return this.medicationLogsService.findRecent(patientId);
+  async findRecent(
+    @GetVitalId() vitalId: string,
+    @Param('patientId', ParseIntPipe) patientId: number,
+  ) {
+    return this.medicationLogsService.findRecent(vitalId, patientId);
   }
 
   @Get('adherence/:patientId')
   @ApiOperation({ summary: 'Calcular adherencia medicosa de un paciente' })
   @ApiResponse({ status: 200, description: 'Porcentaje de adherencia' })
-  async getAdherence(@Param('patientId', ParseIntPipe) patientId: number) {
-    return this.medicationLogsService.getAdherence(patientId);
+  async getAdherence(
+    @GetVitalId() vitalId: string,
+    @Param('patientId', ParseIntPipe) patientId: number,
+  ) {
+    return this.medicationLogsService.getAdherence(vitalId, patientId);
   }
 
   @Post()

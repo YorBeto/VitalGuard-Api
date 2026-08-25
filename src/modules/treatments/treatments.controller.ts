@@ -17,6 +17,7 @@ import {
 } from '@nestjs/swagger';
 import { TreatmentsService } from './treatments.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { GetVitalId } from '../../common/decorators/get-user.decorator';
 import { CreateTreatmentDto, UpdateTreatmentDto } from './dto/treatment.dto';
 
 @ApiTags('Treatments (Tratamientos)')
@@ -29,16 +30,22 @@ export class TreatmentsController {
   @Get('patient/:patientId')
   @ApiOperation({ summary: 'Listar tratamientos de un paciente' })
   @ApiResponse({ status: 200, description: 'Lista de tratamientos' })
-  async findByPatient(@Param('patientId', ParseIntPipe) patientId: number) {
-    return this.treatmentsService.findByPatient(patientId);
+  async findByPatient(
+    @GetVitalId() vitalId: string,
+    @Param('patientId', ParseIntPipe) patientId: number,
+  ) {
+    return this.treatmentsService.findByPatient(vitalId, patientId);
   }
 
   @Get('active/:patientId')
   @ApiOperation({ summary: 'Obtener tratamiento activo de un paciente' })
   @ApiResponse({ status: 200, description: 'Tratamiento activo con detalles' })
   @ApiResponse({ status: 404, description: 'No hay tratamiento activo' })
-  async findActive(@Param('patientId', ParseIntPipe) patientId: number) {
-    return this.treatmentsService.findActive(patientId);
+  async findActive(
+    @GetVitalId() vitalId: string,
+    @Param('patientId', ParseIntPipe) patientId: number,
+  ) {
+    return this.treatmentsService.findActive(vitalId, patientId);
   }
 
   @Post()
@@ -47,8 +54,8 @@ export class TreatmentsController {
   @ApiResponse({ status: 201, description: 'Tratamiento creado' })
   @ApiResponse({ status: 400, description: 'Datos inválidos' })
   @ApiResponse({ status: 404, description: 'Paciente no encontrado' })
-  async create(@Body() dto: CreateTreatmentDto) {
-    return this.treatmentsService.create(dto);
+  async create(@GetVitalId() vitalId: string, @Body() dto: CreateTreatmentDto) {
+    return this.treatmentsService.create(vitalId, dto);
   }
 
   @Patch(':id')
@@ -57,9 +64,10 @@ export class TreatmentsController {
   @ApiResponse({ status: 200, description: 'Tratamiento actualizado' })
   @ApiResponse({ status: 404, description: 'Tratamiento no encontrado' })
   async update(
+    @GetVitalId() vitalId: string,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateTreatmentDto,
   ) {
-    return this.treatmentsService.update(id, dto);
+    return this.treatmentsService.update(vitalId, id, dto);
   }
 }

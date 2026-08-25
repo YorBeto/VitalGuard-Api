@@ -16,6 +16,7 @@ import {
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { DevicesService } from './devices.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { GetVitalId } from '../../common/decorators/get-user.decorator';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { LinkDeviceDto } from './dto/link-device.dto';
 import { SendCommandDto } from './dto/device-command.dto';
@@ -34,8 +35,8 @@ export class DevicesController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Obtener dispositivo de un paciente' })
   @ApiResponse({ status: 200, description: 'Dispositivo encontrado' })
-  async findByPatient(@Param('patientId') patientId: string) {
-    return this.devicesService.findByPatient(+patientId);
+  async findByPatient(@GetVitalId() vitalId: string, @Param('patientId') patientId: string) {
+    return this.devicesService.findByPatient(vitalId, +patientId);
   }
 
   @Post('auto-register')

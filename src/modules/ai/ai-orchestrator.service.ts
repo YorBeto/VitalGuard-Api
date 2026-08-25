@@ -56,7 +56,7 @@ export class AiOrchestratorService {
     const patient = await this.patientsService.findOne(patientId, vitalId);
 
     // 1. Cargar contexto real del paciente
-    const context = await this.buildContext(patientId);
+    const context = await this.buildContext(patientId, vitalId);
 
     // 2. Clasificar intención con Gemini
     const analysis = await this.gemini.analyzeVoiceCommand(text, context);
@@ -64,11 +64,11 @@ export class AiOrchestratorService {
     // 3. Mapear intención → acción real
     switch (analysis.intent) {
       case 'SOS':
-        return this.executeSos(analysis, patientId);
+        return this.executeSos(analysis, patientId, vitalId);
       case 'MARK_TAKEN':
         return this.executeMarkTaken(analysis, patientId);
       case 'CHECK_SCHEDULE':
-        return this.executeNextSchedule(analysis, patientId);
+        return this.executeNextSchedule(analysis, patientId, vitalId);
       case 'UNKNOWN':
       default:
         return {
@@ -79,7 +79,7 @@ export class AiOrchestratorService {
   }
 
   /** Arma el contexto real del paciente para la clasificación de Gemini. */
-  private async buildContext(patientId: number) {
+  private async buildContext(patientId: number, vitalId: string) {
     const patient = await this.prisma.patients.findFirst({
       where: { id: patientId, deleted_at: null },
     });
@@ -92,14 +92,14 @@ export class AiOrchestratorService {
 
     let activeTreatment: any = null;
     try {
-      activeTreatment = await this.treatmentsService.findActive(patientId);
+      activeTreatment = await this.treatmentsService.findActive(vitalId, patientId);
     } catch (err: any) {
       // Sin tratamiento activo no es un error del orquestador; se informa en el contexto.
       if (!(err instanceof NotFoundException)) throw err;
     }
 
-    const schedules = await this.schedulesService.findToday(patientId);
-    const device = await this.devicesService.findByPatient(patientId);
+    const schedules = await this.schedulesService.findToday(vitalId, patientId);
+    const device = await this.devicesService.findByPatient(vitalId, patientId);
 
     const upcoming = this.getUpcomingTakes(schedules);
 
@@ -166,8 +166,9 @@ export class AiOrchestratorService {
   private async executeSos(
     analysis: VoiceAnalysis,
     patientId: number,
+    vitalId: string,
   ): Promise<VoiceCommandResult> {
-    await this.sosEventsService.create(patientId);
+    await this.sosEventsService.create(vitalId, patientId);
     this.logger.log(`🚨 SOS registrado para paciente ${patientId}`);
 
     return {
@@ -221,8 +222,9 @@ export class AiOrchestratorService {
   private async executeNextSchedule(
     analysis: VoiceAnalysis,
     patientId: number,
+    vitalId: string,
   ): Promise<VoiceCommandResult> {
-    const schedules = await this.schedulesService.findToday(patientId);
+    const schedules = await this.schedulesService.findToday(vitalId, patientId);
     const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
 
     const upcoming = schedules

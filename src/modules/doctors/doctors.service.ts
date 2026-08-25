@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import PDFDocument from 'pdfkit';
 import * as path from 'path';
@@ -7,6 +7,24 @@ import * as fs from 'fs';
 @Injectable()
 export class DoctorsService {
   constructor(private readonly prisma: PrismaService) { }
+
+  private async assertPatientBelongsToDoctor(doctorId: number, patientId: number): Promise<void> {
+    const relation = await this.prisma.doctor_patient.findFirst({
+      where: { doctor_id: doctorId, patient_id: patientId, deleted_at: null },
+    });
+    if (!relation) {
+      throw new ForbiddenException('No tienes acceso a este paciente');
+    }
+  }
+
+  private async assertTreatmentBelongsToDoctor(doctorId: number, treatmentId: number) {
+    const treatment = await this.prisma.treatments.findFirst({
+      where: { id: treatmentId, deleted_at: null },
+    });
+    if (!treatment) throw new NotFoundException('Tratamiento no encontrado');
+    await this.assertPatientBelongsToDoctor(doctorId, treatment.patient_id);
+    return treatment;
+  }
 
   async getDashboardData(vitalId: string) {
     // 1. Buscar el perfil base y el registro de médico
@@ -261,6 +279,7 @@ export class DoctorsService {
   // 2. Obtener tratamientos de un paciente en específico (PatientTreatments.tsx)
   async getPatientTreatmentsDashboard(vitalId: string, patientId: number) {
     const doctor = await this.getDoctorProfile(vitalId);
+    await this.assertPatientBelongsToDoctor(doctor.id, patientId);
 
     const patient = await this.prisma.patients.findFirst({
       where: { id: patientId, deleted_at: null },
@@ -317,7 +336,8 @@ export class DoctorsService {
 
   // 3. Detalles completos de un tratamiento específico (TreatmentDetails.tsx y EditTreatment.tsx)
   async getTreatmentDetails(vitalId: string, treatmentId: number) {
-    await this.getDoctorProfile(vitalId);
+    const doctor = await this.getDoctorProfile(vitalId);
+    await this.assertTreatmentBelongsToDoctor(doctor.id, treatmentId);
 
     const treatment = await this.prisma.treatments.findFirst({
       where: { id: treatmentId, deleted_at: null },
@@ -361,7 +381,8 @@ export class DoctorsService {
 
   // 4. Historial de adherencia del tratamiento (TreatmentHistory.tsx)
   async getTreatmentHistory(vitalId: string, treatmentId: number) {
-    await this.getDoctorProfile(vitalId);
+    const doctor = await this.getDoctorProfile(vitalId);
+    await this.assertTreatmentBelongsToDoctor(doctor.id, treatmentId);
 
     const logs = await this.prisma.medication_logs.findMany({
       where: {
@@ -432,7 +453,8 @@ export class DoctorsService {
   }
 
   async addMedicationToTreatment(vitalId: string, treatmentId: number, data: any) {
-    await this.getDoctorProfile(vitalId); // Validación de seguridad
+    const doctor = await this.getDoctorProfile(vitalId); // Validación de seguridad
+    await this.assertTreatmentBelongsToDoctor(doctor.id, treatmentId);
 
     // 1. Buscar o crear el medicamento en el catálogo
     let medication = await this.prisma.medications.findFirst({
@@ -471,6 +493,7 @@ export class DoctorsService {
 
   async createTreatment(vitalId: string, patientId: number, data: any) {
     const doctor = await this.getDoctorProfile(vitalId);
+    await this.assertPatientBelongsToDoctor(doctor.id, patientId);
 
     const newTreatment = await this.prisma.treatments.create({
       data: {
@@ -486,7 +509,8 @@ export class DoctorsService {
   }
 
   async updateTreatment(vitalId: string, treatmentId: number, data: any) {
-    await this.getDoctorProfile(vitalId);
+    const doctor = await this.getDoctorProfile(vitalId);
+    await this.assertTreatmentBelongsToDoctor(doctor.id, treatmentId);
 
     await this.prisma.treatments.update({
       where: { id: treatmentId },
@@ -500,7 +524,14 @@ export class DoctorsService {
   }
 
   async removeMedicationFromTreatment(vitalId: string, detailId: number) {
-    await this.getDoctorProfile(vitalId);
+    const doctor = await this.getDoctorProfile(vitalId);
+
+    const detail = await this.prisma.treatment_details.findFirst({
+      where: { id: detailId, deleted_at: null },
+      include: { treatments: { select: { patient_id: true } } },
+    });
+    if (!detail) throw new NotFoundException('Medicamento no encontrado');
+    await this.assertPatientBelongsToDoctor(doctor.id, detail.treatments.patient_id);
 
     // Hacemos un "Soft Delete" marcando la fecha de eliminación
     await this.prisma.treatment_details.update({

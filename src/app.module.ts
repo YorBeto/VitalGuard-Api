@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './prisma/prisma.module';
+import { CommonModule } from './common/common.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { AppProfilesModule } from './modules/app-profiles/app-profiles.module';
 import { PatientsModule } from './modules/patients/patients.module';
@@ -30,6 +31,7 @@ import { ProfilesModule } from './modules/profiles/profiles.module';
   imports: [
     ScheduleModule.forRoot(),
     PrismaModule,
+    CommonModule,
     EmailCacheModule,
     RealtimeModule,
     AuthModule,

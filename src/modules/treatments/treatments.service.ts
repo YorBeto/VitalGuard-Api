@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DevicesService } from '../devices/devices.service';
+import { PatientAccessService } from '../../common/services/patient-access.service';
 import { CreateTreatmentDto, UpdateTreatmentDto } from './dto/treatment.dto';
 
 @Injectable()
@@ -10,9 +11,11 @@ export class TreatmentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly devicesService: DevicesService,
+    private readonly patientAccess: PatientAccessService,
   ) {}
 
-  async findByPatient(patientId: number) {
+  async findByPatient(vitalId: string, patientId: number) {
+    await this.patientAccess.assertHasAccessToPatient(vitalId, patientId);
     return this.prisma.treatments.findMany({
       where: { patient_id: patientId, deleted_at: null },
       include: {
@@ -30,7 +33,8 @@ export class TreatmentsService {
     });
   }
 
-  async findActive(patientId: number) {
+  async findActive(vitalId: string, patientId: number) {
+    await this.patientAccess.assertHasAccessToPatient(vitalId, patientId);
     const treatment = await this.prisma.treatments.findFirst({
       where: { patient_id: patientId, status: 'Activo', deleted_at: null },
       include: {
@@ -54,13 +58,15 @@ export class TreatmentsService {
     return treatment;
   }
 
-  async create(dto: CreateTreatmentDto) {
+  async create(vitalId: string, dto: CreateTreatmentDto) {
     const patient = await this.prisma.patients.findFirst({
       where: { id: dto.patientId, deleted_at: null },
     });
     if (!patient) {
       throw new NotFoundException('Paciente no encontrado');
     }
+
+    await this.patientAccess.assertHasAccessToPatient(vitalId, dto.patientId);
 
     const treatment = await this.prisma.treatments.create({
       data: {
@@ -76,13 +82,18 @@ export class TreatmentsService {
     return treatment;
   }
 
-  async update(id: number, dto: UpdateTreatmentDto) {
+  async update(vitalId: string, id: number, dto: UpdateTreatmentDto) {
     const treatment = await this.prisma.treatments.findFirst({
       where: { id, deleted_at: null },
     });
     if (!treatment) {
       throw new NotFoundException('Tratamiento no encontrado');
     }
+
+    await this.patientAccess.assertHasAccessToPatient(
+      vitalId,
+      treatment.patient_id,
+    );
 
     const updatedTreatment = await this.prisma.treatments.update({
       where: { id },

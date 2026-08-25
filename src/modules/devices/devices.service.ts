@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SosEventsService } from '../sos-events/sos-events.service';
+import { PatientAccessService } from '../../common/services/patient-access.service';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { LinkDeviceDto } from './dto/link-device.dto';
 
@@ -13,6 +14,7 @@ export class DevicesService {
     private readonly prisma: PrismaService,
     @Inject('MQTT_CLIENT') private readonly mqttClient: ClientProxy,
     private readonly sosEventsService: SosEventsService,
+    private readonly patientAccess: PatientAccessService,
   ) {}
 
   public formatDeviceCode(code: string): string {
@@ -24,7 +26,8 @@ export class DevicesService {
     return cleanCode;
   }
 
-  async findByPatient(patientId: number) {
+  async findByPatient(vitalId: string, patientId: number) {
+    await this.patientAccess.assertHasAccessToPatient(vitalId, patientId);
     return this.prisma.devices.findFirst({
       where: { patient_id: patientId, deleted_at: null },
       include: { device_compartments: { where: { deleted_at: null } } },
@@ -229,6 +232,6 @@ export class DevicesService {
     }
 
     this.logger.log(`🚨 SOS RECIBIDO de dispositivo ${formattedCode} para paciente #${device.patient_id}`);
-    return this.sosEventsService.create(device.patient_id);
+    return this.sosEventsService.createInternal(device.patient_id);
   }
 }

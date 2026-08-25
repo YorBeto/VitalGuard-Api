@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PatientAccessService } from '../../common/services/patient-access.service';
 import {
   CreateMedicationLogDto,
   UpdateMedicationLogDto,
@@ -11,9 +12,11 @@ export class MedicationLogsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
+    private readonly patientAccess: PatientAccessService,
   ) {}
 
-  async findRecent(patientId: number) {
+  async findRecent(vitalId: string, patientId: number) {
+    await this.patientAccess.assertHasAccessToPatient(vitalId, patientId);
     const treatments = await this.prisma.treatments.findMany({
       where: { patient_id: patientId, deleted_at: null },
       select: { id: true },
@@ -39,7 +42,8 @@ export class MedicationLogsService {
     });
   }
 
-  async getAdherence(patientId: number) {
+  async getAdherence(vitalId: string, patientId: number) {
+    await this.patientAccess.assertHasAccessToPatient(vitalId, patientId);
     const treatments = await this.prisma.treatments.findMany({
       where: { patient_id: patientId, deleted_at: null },
       select: { id: true },
@@ -69,7 +73,7 @@ export class MedicationLogsService {
     return { adherence: +(completed / total).toFixed(2), total, completed };
   }
 
-  async create(dto: CreateMedicationLogDto, vitalId?: string) {
+  async create(dto: CreateMedicationLogDto, vitalId: string) {
     const schedule = await this.prisma.schedules.findFirst({
       where: { id: dto.scheduleId, deleted_at: null },
       include: {
@@ -81,6 +85,11 @@ export class MedicationLogsService {
     if (!schedule) {
       throw new NotFoundException('Schedule no encontrado');
     }
+
+    await this.patientAccess.assertHasAccessToPatient(
+      vitalId,
+      schedule.treatment_details.treatments.patient_id,
+    );
 
     const log = await this.prisma.medication_logs.create({
       data: {
@@ -101,13 +110,23 @@ export class MedicationLogsService {
     return log;
   }
 
-  async update(id: number, dto: UpdateMedicationLogDto, vitalId?: string) {
+  async update(id: number, dto: UpdateMedicationLogDto, vitalId: string) {
     const log = await this.prisma.medication_logs.findFirst({
       where: { id, deleted_at: null },
+      include: {
+        schedules: {
+          include: { treatment_details: { include: { treatments: true } } },
+        },
+      },
     });
     if (!log) {
       throw new NotFoundException('Medication log no encontrado');
     }
+
+    await this.patientAccess.assertHasAccessToPatient(
+      vitalId,
+      log.schedules.treatment_details.treatments.patient_id,
+    );
 
     const updated = await this.prisma.medication_logs.update({
       where: { id },

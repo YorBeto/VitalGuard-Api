@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DevicesService } from '../devices/devices.service';
+import { PatientAccessService } from '../../common/services/patient-access.service';
 import { CreateScheduleDto } from './dto/schedule.dto';
 
 @Injectable()
@@ -10,9 +11,11 @@ export class SchedulesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly devicesService: DevicesService,
+    private readonly patientAccess: PatientAccessService,
   ) {}
 
-  async findToday(patientId: number) {
+  async findToday(vitalId: string, patientId: number) {
+    await this.patientAccess.assertHasAccessToPatient(vitalId, patientId);
     const treatments = await this.prisma.treatments.findMany({
       where: { patient_id: patientId, deleted_at: null },
       select: { id: true },
@@ -36,13 +39,19 @@ export class SchedulesService {
     });
   }
 
-  async create(dto: CreateScheduleDto) {
+  async create(vitalId: string, dto: CreateScheduleDto) {
     const detail = await this.prisma.treatment_details.findFirst({
       where: { id: dto.treatmentDetailId, deleted_at: null },
+      include: { treatments: { select: { patient_id: true } } },
     });
     if (!detail) {
       throw new NotFoundException('Treatment detail no encontrado');
     }
+
+    await this.patientAccess.assertHasAccessToPatient(
+      vitalId,
+      detail.treatments.patient_id,
+    );
 
     const schedule = await this.prisma.schedules.create({
       data: {
@@ -56,13 +65,21 @@ export class SchedulesService {
     return schedule;
   }
 
-  async remove(id: number) {
+  async remove(vitalId: string, id: number) {
     const schedule = await this.prisma.schedules.findFirst({
       where: { id, deleted_at: null },
+      include: {
+        treatment_details: { include: { treatments: { select: { patient_id: true } } } },
+      },
     });
     if (!schedule) {
       throw new NotFoundException('Horario no encontrado');
     }
+
+    await this.patientAccess.assertHasAccessToPatient(
+      vitalId,
+      schedule.treatment_details.treatments.patient_id,
+    );
 
     await this.prisma.schedules.update({
       where: { id },
