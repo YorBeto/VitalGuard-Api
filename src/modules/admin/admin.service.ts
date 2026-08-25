@@ -275,7 +275,10 @@ export class AdminService {
             const endpoint = `${vitalIdBaseUrl.replace(/\/$/, '')}/auth/user/${encodeURIComponent(vitalId)}`;
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 5000);
-            const response = await fetch(endpoint, { signal: controller.signal });
+            const response = await fetch(endpoint, {
+                signal: controller.signal,
+                headers: { 'X-Internal-Api-Key': process.env.INTERNAL_SERVICE_KEY || '' },
+            });
             clearTimeout(timeout);
             if (response.ok) {
                 const responseJson: any = await response.json();
