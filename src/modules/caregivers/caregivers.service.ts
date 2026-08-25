@@ -35,18 +35,34 @@ export class CaregiversService {
       }
     }
 
+    // Resuelve nombre del paciente consultado para detectar autocuidado (caregiver == paciente)
+    const viewedPatient = relations.length
+      ? await this.prisma.patients.findUnique({
+          where: { id: patientId },
+          select: { first_name: true, paternal_last_name: true, maternal_last_name: true },
+        })
+      : null;
+    const viewedName = viewedPatient
+      ? [viewedPatient.first_name, viewedPatient.paternal_last_name, viewedPatient.maternal_last_name].filter(Boolean).join(' ')
+      : null;
+
     return relations.map((r) => {
       const vitalId: string | null = (r.caregivers as any)?.app_profiles?.vital_id ?? null;
       const kinshipRaw = r.kinship as string | null;
-      const kinshipDisplay = kinshipRaw
+      let kinshipDisplay = kinshipRaw
         ? kinshipRaw.replace('Hijo_a', 'Hijo/a').replace('Abuelo_a', 'Abuelo/a').replace('Esposo_a', 'Esposo/a')
         : null;
+      const disp = selfMap.get(r.caregivers.id) ?? null;
+      // Si es autocuidado (displayName coincide con paciente visto y kinship Otro), etiqueta como Autocuidado
+      if (kinshipRaw === 'Otro' && disp && viewedName && disp === viewedName) {
+        kinshipDisplay = 'Autocuidado';
+      }
       return {
         ...r.caregivers,
         kinship: r.kinship,
         kinshipDisplay,
         vitalId,
-        displayName: selfMap.get(r.caregivers.id) ?? null,
+        displayName: disp,
       };
     });
   }
