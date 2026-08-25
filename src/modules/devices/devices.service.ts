@@ -389,19 +389,8 @@ export class DevicesService {
     const expectedSet = [...new Set(expectedCompartments.map((l) => l.schedules?.treatment_details?.compartment_number).filter((n): n is number => n != null))];
 
     if (pendingLogs.length > 0) {
-      // Hay dosis pendiente para ESE compartimento
-      const target = pendingLogs[0];
-      const diffMs = now.getTime() - new Date(target.scheduled_datetime).getTime();
-      const statusToSet = diffMs <= windowConfirmMs ? 'Confirmado' : 'Retraso';
-      await this.prisma.medication_logs.update({
-        where: { id: target.id },
-        data: { status: statusToSet as any, actual_taken_datetime: now },
-      });
-      this.logger.log(`✅ [Compartimento] comp.${compartmentNumber} CORRECTO -> log #${target.id} ${statusToSet}`);
-      // Audio correcto
-      await this.sendCommand(formattedCode, 'REPRODUCIR_AUDIO', { audio: 'compartimento_correcto' });
-      // Notificación leve opcional (no spam si ya confirmada por TOMA_CONFIRMADA)
-      // Se omite notificación extra para flujo correcto; queda en logs
+      // Plan B: firmware es autoritativo — solo telemetría, no duplica log ni audio
+      this.logger.log(`✅ [Compartimento] comp.${compartmentNumber} CORRECTO (telemetría) -> pendiente #${pendingLogs[0].id} se esperará TOMA_CONFIRMADA del firmware`);
       return;
     }
 
@@ -413,10 +402,7 @@ export class DevicesService {
       ? `Paciente abrió comp. ${compartmentNumber}, esperaba ${expectedStr}. Verifica medicación.`
       : `Se abrió comp. ${compartmentNumber} sin dosis pendiente. Esperados: ${expectedStr}.`;
 
-    this.logger.warn(`🚨 [Compartimento] ${title} device=${formattedCode} comp=${compartmentNumber} esperados=${expectedStr}`);
-
-    // Audio incorrecto
-    await this.sendCommand(formattedCode, 'REPRODUCIR_AUDIO', { audio: 'compartimento_incorrecto' });
+    this.logger.warn(`🚨 [Compartimento] ${title} device=${formattedCode} comp=${compartmentNumber} esperados=${expectedStr} (Plan B: sin audio, firmware ya sonó)`);
 
     // Notificación a TODOS los cuidadores vinculados (reusa DOSIS_RECORDATORIO para no migrar prod)
     const profileIds2 = await this.notificationsService.caregiverProfilesForPatient(device.patient_id);
