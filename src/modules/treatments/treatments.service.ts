@@ -136,7 +136,7 @@ export class TreatmentsService {
     });
 
     // 3. Libera compartimentos del pastillero (status -> closed)
-    await this.releaseCompartments(treatment.patient_id, treatment.treatment_details);
+    await this.releaseCompartments(treatment.patient_id);
 
     // 4. Actualiza MQTT: al excluir status != Activo, el config ya no incluirá este tratamiento
     await this.notifyDeviceConfig(treatment.patient_id);
@@ -163,30 +163,29 @@ export class TreatmentsService {
     return finalized;
   }
 
-  private async releaseCompartments(
-    patientId: number,
-    details: Array<{ compartment_number: number | null }>,
-  ) {
+  private async releaseCompartments(patientId: number) {
     const device = await this.prisma.devices.findFirst({
       where: { patient_id: patientId, deleted_at: null },
     });
     if (!device) return;
 
-    const compartments = [...new Set(details.map((d) => d.compartment_number).filter((n): n is number => n != null))];
-    if (compartments.length === 0) return;
+    // Libera TODOS los compartimentos abiertos del dispositivo
+    // Esto asegura que al finalizar un tratamiento, sus compartimentos queden disponibles
+    const comps = await this.prisma.device_compartments.findMany({
+      where: { device_id: device.id, status: 'open', deleted_at: null },
+    });
 
-    for (const num of compartments) {
-      const comp = await this.prisma.device_compartments.findFirst({
-        where: { device_id: device.id, compartment_number: num, deleted_at: null },
+    for (const comp of comps) {
+      await this.prisma.device_compartments.update({
+        where: { id: comp.id },
+        data: { status: 'closed' as any },
       });
-      if (comp) {
-        await this.prisma.device_compartments.update({
-          where: { id: comp.id },
-          data: { status: 'closed' as any },
-        });
-      }
     }
-    this.logger.log(`Compartimentos liberados para paciente ${patientId}: ${compartments.join(', ')}`);
+
+    if (comps.length > 0) {
+      const nums = comps.map((c) => c.compartment_number).join(', ');
+      this.logger.log(`Compartimentos liberados para paciente ${patientId}: ${nums}`);
+    }
   }
 
   async remove(id: number) {
