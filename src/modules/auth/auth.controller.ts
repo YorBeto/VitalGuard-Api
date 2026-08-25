@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, ForbiddenException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { GetVitalId } from '../../common/decorators/get-user.decorator';
@@ -9,6 +9,9 @@ export class AuthController {
 
   @Post('dev-login')
   async devLogin(@Body('vitalId') vitalId?: string) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new ForbiddenException('dev-login no está disponible en producción');
+    }
     return this.authService.devLogin(vitalId);
   }
 
