@@ -12,6 +12,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { RealtimeService } from './realtime.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { getJwtSecret } from '../../common/config/jwt-secret';
 
 interface JwtPayload {
   sub: string;
@@ -152,9 +153,6 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   private async verifyToken(token: string): Promise<JwtPayload> {
-    const secret =
-      process.env.JWT_SECRET ||
-      'c16f28b5fc222a4700fe9e5caaa3e3c2936cc68cb70f248aada34b75fd8c35d9';
-    return this.jwtService.verifyAsync<JwtPayload>(token, { secret });
+    return this.jwtService.verifyAsync<JwtPayload>(token, { secret: getJwtSecret() });
   }
 }
