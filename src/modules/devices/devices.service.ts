@@ -198,6 +198,50 @@ export class DevicesService {
   }
 
   // ═══════════════════════════════════════════════════════════
+  // MQTT: Solicitud de resincronización de config (CONTRATO_SOLICITAR_CONFIG)
+  // ═══════════════════════════════════════════════════════════
+
+  async handleSolicitarConfig(rawDeviceId: string) {
+    const formatted = this.formatDeviceCode(rawDeviceId);
+
+    const device = await this.prisma.devices.findFirst({
+      where: { unique_code: formatted, deleted_at: null },
+    });
+
+    if (!device) {
+      this.logger.warn(`⚠️ [solicitar_config] dispositivo ${formatted} no encontrado, respondiendo con config vacía`);
+      const emptyConfig = { proximaToma: '--:--', sosCountdownSeg: 10, medicamentos: [] as any[] };
+      this.mqttClient.emit(`vitalguard/${formatted}/config`, emptyConfig);
+      // Fallback: responde también al ID crudo si difiere del formateado (ej. A1B2C3 vs A1B-2C3)
+      if (formatted !== rawDeviceId) this.mqttClient.emit(`vitalguard/${rawDeviceId}/config`, emptyConfig);
+      this.logger.log(`📤 Config vacía enviada a ${formatted} (dispositivo no existe)`);
+      return;
+    }
+
+    if (!device.patient_id) {
+      const emptyConfig = { proximaToma: '--:--', sosCountdownSeg: 10, medicamentos: [] as any[] };
+      this.mqttClient.emit(`vitalguard/${formatted}/config`, emptyConfig);
+      if (formatted !== rawDeviceId) this.mqttClient.emit(`vitalguard/${rawDeviceId}/config`, emptyConfig);
+      this.logger.log(`📤 Config vacía enviada a ${formatted} (sin paciente vinculado) por solicitar_config`);
+      return;
+    }
+
+    await this.sendConfigToDevice(formatted, device.patient_id);
+    // Asegura entrega aunque el firmware esté suscrito al ID crudo
+    if (formatted !== rawDeviceId) {
+      // Re-emite misma config al topic crudo (evita desync por formato)
+      const treatments = await this.prisma.treatments.findMany({
+        where: { patient_id: device.patient_id, status: 'Activo', deleted_at: null },
+        include: { treatment_details: { where: { deleted_at: null }, include: { medications: true, schedules: { where: { deleted_at: null } } } } },
+      });
+      // Reusa la lógica de sendConfigToDevice pero para el topic crudo: no hace falta duplicar si ya se emitió al formateado y coinciden los suscriptores
+      // Solo si difieren, duplicamos con el mismo payload ya calculado via sendConfigToDevice (el log ya confirma envío)
+      await this.sendConfigToDevice(rawDeviceId, device.patient_id);
+    }
+    this.logger.log(`📤 Config resincronizada a ${formatted} por solicitar_config (paciente ${device.patient_id})`);
+  }
+
+  // ═══════════════════════════════════════════════════════════
   // MQTT: Procesar eventos del ESP32
   // ═══════════════════════════════════════════════════════════
 

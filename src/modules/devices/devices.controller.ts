@@ -14,7 +14,7 @@ import {
   ApiBearerAuth,
   ApiBody,
 } from '@nestjs/swagger';
-import { MessagePattern, Payload } from '@nestjs/microservices';
+import { Ctx, MessagePattern, MqttContext, Payload } from '@nestjs/microservices';
 import { DevicesService } from './devices.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RegisterDeviceDto } from './dto/register-device.dto';
@@ -159,6 +159,41 @@ export class DevicesController {
     if (data.tipo === 'SOS') {
       await this.devicesService.handleSosAlert(data.deviceId);
     }
+  }
+
+  @MessagePattern('vitalguard/+/solicitar_config')
+  async handleSolicitarConfig(
+    @Payload() data: any,
+    @Ctx() context?: MqttContext,
+  ) {
+    let rawId: string | null = null;
+
+    if (typeof data === 'string') {
+      try {
+        const parsed = JSON.parse(data);
+        rawId = parsed?.deviceId ?? parsed?.device_id ?? null;
+      } catch {
+        rawId = data;
+      }
+    } else if (data && typeof data === 'object') {
+      rawId = data.deviceId ?? data.device_id ?? data.deviceID ?? null;
+    }
+
+    if (!rawId && context) {
+      try {
+        const topic = context.getTopic?.() ?? (context as any)?.topic ?? '';
+        const match = topic.match(/vitalguard\/([^/]+)\/solicitar_config/);
+        if (match) rawId = match[1];
+      } catch {}
+    }
+
+    if (!rawId) {
+      this.logger(`⚠️ [solicitar_config] payload sin deviceId: ${JSON.stringify(data)?.slice(0, 200)}`);
+      return;
+    }
+
+    this.logger(`🔄 [solicitar_config] ${rawId} -> resincronizando config`);
+    await this.devicesService.handleSolicitarConfig(rawId);
   }
 
   private logger(msg: string) {
