@@ -153,7 +153,7 @@ export class DevicesService {
   // MQTT: Procesar eventos del ESP32
   // ═══════════════════════════════════════════════════════════
 
-  async handleTomaConfirmada(deviceId: string) {
+  async handleTomaConfirmada(deviceId: string, status: keyof typeof import('@prisma/client').log_status = 'Confirmado') {
     const formattedCode = this.formatDeviceCode(deviceId);
     const device = await this.prisma.devices.findFirst({
       where: { unique_code: formattedCode, deleted_at: null },
@@ -232,10 +232,10 @@ export class DevicesService {
 
     await this.prisma.medication_logs.update({
       where: { id: pendingLog.id },
-      data: { status: 'Confirmado', actual_taken_datetime: new Date() },
+      data: { status, actual_taken_datetime: new Date() },
     });
 
-    this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como Confirmado. Tomada a las ${pendingLog.actual_taken_datetime}`);
+    this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como ${status}. Tomada a las ${pendingLog.actual_taken_datetime}`);
 
     if (device.responsible_caregiver_id) {
       const caregiver = await this.prisma.caregivers.findFirst({
@@ -251,6 +251,149 @@ export class DevicesService {
             type: 'DOSIS_RECORDATORIO',
           },
         });
+      }
+    }
+  }
+
+  async handleCompartmentEvent(
+    deviceId: string,
+    compartmentNumber: number,
+    tipo: 'COMPARTIMENTO_ABIERTO' | 'COMPARTIMENTO_CERRADO' | string,
+  ) {
+    const formattedCode = this.formatDeviceCode(deviceId);
+    const device = await this.prisma.devices.findFirst({
+      where: { unique_code: formattedCode, deleted_at: null },
+    });
+    if (!device?.patient_id) {
+      this.logger.warn(`⚠️ [Compartimento] Dispositivo ${formattedCode} sin paciente`);
+      return;
+    }
+    const isOpen = tipo === 'COMPARTIMENTO_ABIERTO';
+    const newStatus = isOpen ? 'open' : 'closed';
+
+    // 1. Actualizar solo status en device_compartments (sin nueva tabla)
+    const existingComp = await this.prisma.device_compartments.findFirst({
+      where: { device_id: device.id, compartment_number: compartmentNumber, deleted_at: null },
+    });
+    if (existingComp) {
+      await this.prisma.device_compartments.update({
+        where: { id: existingComp.id },
+        data: { status: newStatus as any },
+      });
+    } else {
+      // Intenta crear; si hay soft-deleted previo, lo restaura
+      const soft = await this.prisma.device_compartments.findFirst({
+        where: { device_id: device.id, compartment_number: compartmentNumber },
+      });
+      if (soft) {
+        await this.prisma.device_compartments.update({
+          where: { id: soft.id },
+          data: { status: newStatus as any, deleted_at: null },
+        });
+      } else {
+        await this.prisma.device_compartments.create({
+          data: { device_id: device.id, compartment_number: compartmentNumber, status: newStatus as any },
+        });
+      }
+    }
+    this.logger.log(`📦 [Compartimento] ${formattedCode} comp.${compartmentNumber} -> ${newStatus}`);
+
+    // Solo validar al ABRIR, al cerrar solo actualizamos estado
+    if (!isOpen) return;
+
+    const now = new Date();
+    // Ventana: 0-15m = Confirmado, 15-20m = Retraso, >20 o sin pendiente = alerta incorrecto
+    const windowConfirmMs = 15 * 60 * 1000;
+    const windowRetrasoMs = 20 * 60 * 1000;
+    const earliest = new Date(now.getTime() - windowRetrasoMs);
+
+    // Buscar logs Pendiente en ventana que mapeen al compartimento abierto
+    const pendingLogs = await this.prisma.medication_logs.findMany({
+      where: {
+        status: 'Pendiente',
+        deleted_at: null,
+        scheduled_datetime: { gte: earliest, lte: now },
+        schedules: {
+          deleted_at: null,
+          treatment_details: {
+            deleted_at: null,
+            compartment_number: compartmentNumber,
+            treatments: { patient_id: device.patient_id, deleted_at: null },
+          },
+        },
+      },
+      include: {
+        schedules: { include: { treatment_details: { include: { medications: true, treatments: true } } } },
+      },
+      orderBy: { scheduled_datetime: 'desc' },
+    });
+
+    const expectedCompartments = await this.prisma.medication_logs.findMany({
+      where: {
+        status: 'Pendiente',
+        deleted_at: null,
+        scheduled_datetime: { gte: earliest, lte: now },
+        schedules: {
+          deleted_at: null,
+          treatment_details: { treatments: { patient_id: device.patient_id, deleted_at: null } },
+        },
+      },
+      include: { schedules: { select: { treatment_details: { select: { compartment_number: true } } } } },
+    });
+    const expectedSet = [...new Set(expectedCompartments.map((l) => l.schedules?.treatment_details?.compartment_number).filter((n): n is number => n != null))];
+
+    if (pendingLogs.length > 0) {
+      // Hay dosis pendiente para ESE compartimento
+      const target = pendingLogs[0];
+      const diffMs = now.getTime() - new Date(target.scheduled_datetime).getTime();
+      const statusToSet = diffMs <= windowConfirmMs ? 'Confirmado' : 'Retraso';
+      await this.prisma.medication_logs.update({
+        where: { id: target.id },
+        data: { status: statusToSet as any, actual_taken_datetime: now },
+      });
+      this.logger.log(`✅ [Compartimento] comp.${compartmentNumber} CORRECTO -> log #${target.id} ${statusToSet}`);
+      // Audio correcto
+      await this.sendCommand(formattedCode, 'REPRODUCIR_AUDIO', { audio: 'compartimento_correcto' });
+      // Notificación leve opcional (no spam si ya confirmada por TOMA_CONFIRMADA)
+      // Se omite notificación extra para flujo correcto; queda en logs
+      return;
+    }
+
+    // Compartimento incorrecto o fuera de ventana
+    const expectedStr = expectedSet.length ? expectedSet.map((n) => `#${n}`).join(', ') : 'ninguno (sin dosis pendiente)';
+    const isWrongCompartment = expectedSet.length > 0 && !expectedSet.includes(compartmentNumber);
+    const title = isWrongCompartment ? 'Compartimento incorrecto' : 'Apertura fuera de horario';
+    const message = isWrongCompartment
+      ? `Paciente abrió comp. ${compartmentNumber}, esperaba ${expectedStr}. Verifica medicación.`
+      : `Se abrió comp. ${compartmentNumber} sin dosis pendiente. Esperados: ${expectedStr}.`;
+
+    this.logger.warn(`🚨 [Compartimento] ${title} device=${formattedCode} comp=${compartmentNumber} esperados=${expectedStr}`);
+
+    // Audio incorrecto
+    await this.sendCommand(formattedCode, 'REPRODUCIR_AUDIO', { audio: 'compartimento_incorrecto' });
+
+    // Notificación a cuidadores (reusa DOSIS_RECORDATORIO para no migrar prod)
+    if (device.responsible_caregiver_id) {
+      const caregiver = await this.prisma.caregivers.findFirst({
+        where: { id: device.responsible_caregiver_id, deleted_at: null },
+      });
+      if (caregiver) {
+        await this.prisma.notifications.create({
+          data: {
+            app_profile_id: caregiver.app_profile_id,
+            patient_id: device.patient_id,
+            title,
+            message,
+            type: 'DOSIS_RECORDATORIO',
+            metadata: {
+              device_code: formattedCode,
+              compartimento_abierto: compartmentNumber,
+              compartimentos_esperados: expectedSet,
+              fuera_ventana: pendingLogs.length === 0 && expectedSet.length === 0,
+            } as any,
+          },
+        });
+        this.logger.log(`📩 Notificación compartimento enviada a caregiver ${caregiver.id}`);
       }
     }
   }

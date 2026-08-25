@@ -93,12 +93,40 @@ export class DevicesController {
 
   @MessagePattern('vitalguard/+/evento')
   async handleMqttEvent(
-    @Payload() data: { tipo: string; deviceId: string; timestamp?: string },
+    @Payload()
+    data: {
+      tipo: string;
+      deviceId: string;
+      timestamp?: string;
+      compartimento?: number;
+      compartment?: number;
+    },
   ) {
     this.logger(`📌 [MQTT Evento] ${data.deviceId}: ${data.tipo}`);
 
-    if (data.tipo === 'TOMA_CONFIRMADA') {
-      await this.devicesService.handleTomaConfirmada(data.deviceId);
+    const statusMap: Record<string, keyof typeof import('@prisma/client').log_status> = {
+      TOMA_CONFIRMADA: 'Confirmado',
+      CONFIRMACION_TOMA: 'Confirmado',
+      TOMA_RETRASO: 'Retraso',
+    };
+
+    const mappedStatus = statusMap[data.tipo];
+    if (mappedStatus) {
+      await this.devicesService.handleTomaConfirmada(data.deviceId, mappedStatus);
+      return;
+    }
+
+    // Eventos de compartimento: COMPARTIMENTO_ABIERTO / COMPARTIMENTO_CERRADO
+    const compartimentoRaw = data.compartimento ?? data.compartment;
+    if (
+      (data.tipo === 'COMPARTIMENTO_ABIERTO' || data.tipo === 'COMPARTIMENTO_CERRADO') &&
+      compartimentoRaw != null
+    ) {
+      const n = Number(compartimentoRaw);
+      if (!Number.isNaN(n) && n > 0) {
+        await this.devicesService.handleCompartmentEvent(data.deviceId, n, data.tipo);
+      }
+      return;
     }
   }
 
