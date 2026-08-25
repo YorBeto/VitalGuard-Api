@@ -301,7 +301,8 @@ export class DevicesService {
     // Solo validar al ABRIR, al cerrar solo actualizamos estado
     if (!isOpen) return;
 
-    const now = new Date();
+    // Normaliza a TZ de negocio (DB -0600) para no repetir el desfase UTC del scheduler
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
     // Ventana: 0-15m = Confirmado, 15-20m = Retraso, >20 o sin pendiente = alerta incorrecto
     const windowConfirmMs = 15 * 60 * 1000;
     const windowRetrasoMs = 20 * 60 * 1000;

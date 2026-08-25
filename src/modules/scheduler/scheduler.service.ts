@@ -8,20 +8,30 @@ export class SchedulerService {
   private readonly logger = new Logger(SchedulerService.name);
   /** Ventana de escalado antes de marcar una dosis como omitida y avisar a cuidadores. */
   private readonly omissionTimeoutMinutes = 15;
+  /** TZ canónica del sistema (DB está en America/Mexico_City -0600, backend en UTC) */
+  private readonly appTimeZone = 'America/Mexico_City';
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
   ) {}
 
+  /** Devuelve now convertido a la TZ de negocio sin depender del TZ del contenedor */
+  private nowInAppTz(): Date {
+    const now = new Date();
+    // Truco: formatea en la TZ y reconstruye como Date local para getHours/getMinutes coherentes
+    const str = now.toLocaleString('en-US', { timeZone: this.appTimeZone });
+    return new Date(str);
+  }
+
   @Cron(CronExpression.EVERY_MINUTE)
   async handleScheduleTick() {
-    const now = new Date();
+    const now = this.nowInAppTz();
     const currentHour = now.getHours();
     const currentMinute = now.getMinutes();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    this.logger.debug(`Scheduler tick: ${currentHour}:${String(currentMinute).padStart(2, '0')}`);
+    this.logger.debug(`Scheduler tick: ${currentHour}:${String(currentMinute).padStart(2, '0')} TZ=${this.appTimeZone}`);
 
     await this.createPendingLogs(currentHour, currentMinute, today, now);
     await this.markOmittedLogs(today);
@@ -97,7 +107,7 @@ export class SchedulerService {
     const threshold = new Date(today);
     threshold.setHours(23, 59, 59, 999);
 
-    const now = new Date();
+    const now = this.nowInAppTz();
     const omitThreshold = new Date(
       now.getTime() - this.omissionTimeoutMinutes * 60 * 1000,
     );
