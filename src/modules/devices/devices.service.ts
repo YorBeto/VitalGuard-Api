@@ -8,6 +8,7 @@ import { LinkDeviceDto } from './dto/link-device.dto';
 
 @Injectable()
 export class DevicesService {
+  private readonly appTimeZone = 'America/Mexico_City';
   private readonly logger = new Logger(DevicesService.name);
 
   constructor(
@@ -135,7 +136,66 @@ export class DevicesService {
   // MQTT: Enviar mensajes al ESP32
   // ═══════════════════════════════════════════════════════════
 
+  /**
+   * Genera los siguientes horarios pendientes para un detalle de tratamiento (máx. 4).
+   * Reemplaza la lógica anterior estática para cumplir el contrato del firmware.
+   */
+  private getHorariosForTreatmentDetail(now: Date, td: any): string[] {
+    const schedules = td.schedules ?? [];
+    if (schedules.length === 0) return [];
+
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const freqHours = td.frequency_hours ?? 0;
+
+    // Caso 1: Tratamiento recurrente con frecuencia (ej: cada 8 horas)
+    if (freqHours > 0) {
+      const firstSchedule = schedules[0].time_of_day as unknown as Date;
+      const baseMinutes = firstSchedule.getHours() * 60 + firstSchedule.getMinutes();
+      const freqMinutes = freqHours * 60;
+
+      // Calcular el primer slot igual o posterior a la hora actual (con 2 min de holgura)
+      let nextMinutes = baseMinutes;
+      if (nowMinutes > baseMinutes + 2) {
+        const slotsPassed = Math.floor((nowMinutes - baseMinutes) / freqMinutes) + 1;
+        nextMinutes = baseMinutes + slotsPassed * freqMinutes;
+      }
+
+      const generatedSlots: string[] = [];
+      // Generar hasta 4 slots proyectados (límite máximo del firmware ESP32)
+      for (let i = 0; i < 4; i++) {
+        const slot = (nextMinutes + i * freqMinutes) % (24 * 60);
+        const h = String(Math.floor(slot / 60)).padStart(2, '0');
+        const m = String(slot % 60).padStart(2, '0');
+        generatedSlots.push(`${h}:${m}`);
+      }
+      return generatedSlots;
+    }
+
+    // Caso 2: Horarios específicos fijos definidos en schedules
+    const formattedSchedules = schedules.map((s: any) => {
+      const t = s.time_of_day as unknown as Date;
+      const min = t.getHours() * 60 + t.getMinutes();
+      return {
+        minutes: min,
+        formatted: `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`,
+      };
+    });
+
+    // Ordenar cronológicamente
+    formattedSchedules.sort((a, b) => a.minutes - b.minutes);
+
+    // Filtrar horarios pendientes a partir de la hora actual
+    let remaining = formattedSchedules.filter((s) => s.minutes >= nowMinutes - 2);
+    if (remaining.length === 0) {
+      // Si ya pasaron todos hoy, enviar los primeros del día siguiente
+      remaining = formattedSchedules;
+    }
+
+    return remaining.slice(0, 4).map((s) => s.formatted);
+  }
+
   async sendConfigToDevice(deviceId: string, patientId: number) {
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: this.appTimeZone }));
     const treatments = await this.prisma.treatments.findMany({
       where: { patient_id: patientId, status: 'Activo', deleted_at: null },
       include: {
@@ -149,7 +209,7 @@ export class DevicesService {
       },
     });
 
-    const allMeds: Array<{
+    const medicamentos: Array<{
       dosisId: number;
       nombre: string;
       dosis: string | null;
@@ -157,34 +217,37 @@ export class DevicesService {
       horarios: string[];
     }> = [];
 
+    const allCalculatedTimes: string[] = [];
+
     for (const tr of treatments) {
       for (const td of tr.treatment_details) {
-        for (const s of td.schedules) {
-          const time = s.time_of_day as unknown as Date;
-          const formatted = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
-          allMeds.push({
-            dosisId: td.id,
-            nombre: td.medications?.name ?? 'Medicamento',
-            dosis: td.dose_info ?? null,
-            compartimento: td.compartment_number ?? null,
-            horarios: [formatted],
-          });
+        // Usa la nueva función para proyectar horarios
+        const horarios = this.getHorariosForTreatmentDetail(now, td);
+        if (horarios.length > 0) {
+          allCalculatedTimes.push(...horarios);
         }
+
+        medicamentos.push({
+          dosisId: td.id,
+          nombre: td.medications?.name ?? 'Medicamento',
+          dosis: td.dose_info ?? null,
+          compartimento: td.compartment_number ?? null,
+          horarios,
+        });
       }
     }
 
-    const uniqueMeds = allMeds.filter(
-      (med, index, self) =>
-        self.findIndex((m) => m.dosisId === med.dosisId) === index,
-    );
-
-    const allHorarios = uniqueMeds.flatMap((m) => m.horarios).sort();
-    const proximaToma = allHorarios.length > 0 ? allHorarios[0] : '--:--';
+    // Calcular proximaToma global
+    let proximaToma = '--:--';
+    if (allCalculatedTimes.length > 0) {
+      const uniqueSorted = [...new Set(allCalculatedTimes)].sort();
+      proximaToma = uniqueSorted[0];
+    }
 
     const config = {
       proximaToma,
       sosCountdownSeg: 10,
-      medicamentos: uniqueMeds,
+      medicamentos,
     };
 
     this.mqttClient.emit(`vitalguard/${deviceId}/config`, config);
@@ -229,13 +292,6 @@ export class DevicesService {
     await this.sendConfigToDevice(formatted, device.patient_id);
     // Asegura entrega aunque el firmware esté suscrito al ID crudo
     if (formatted !== rawDeviceId) {
-      // Re-emite misma config al topic crudo (evita desync por formato)
-      const treatments = await this.prisma.treatments.findMany({
-        where: { patient_id: device.patient_id, status: 'Activo', deleted_at: null },
-        include: { treatment_details: { where: { deleted_at: null }, include: { medications: true, schedules: { where: { deleted_at: null } } } } },
-      });
-      // Reusa la lógica de sendConfigToDevice pero para el topic crudo: no hace falta duplicar si ya se emitió al formateado y coinciden los suscriptores
-      // Solo si difieren, duplicamos con el mismo payload ya calculado via sendConfigToDevice (el log ya confirma envío)
       await this.sendConfigToDevice(rawDeviceId, device.patient_id);
     }
     this.logger.log(`📤 Config resincronizada a ${formatted} por solicitar_config (paciente ${device.patient_id})`);
@@ -329,7 +385,7 @@ export class DevicesService {
 
     this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como ${status}. Tomada a las ${pendingLog.actual_taken_datetime}`);
 
-    // Notifica a TODOS los cuidadores vinculados (decisión usuario: notificaciones para todos)
+    // Notifica a TODOS los cuidadores vinculados
     const profileIds = await this.notificationsService.caregiverProfilesForPatient(device.patient_id);
     for (const pid of profileIds) {
       await this.prisma.notifications.create({
@@ -342,6 +398,9 @@ export class DevicesService {
         },
       });
     }
+
+    // 👉 Empujar config actualizada con proximaToma calculado, para que el dispositivo avance de 11:00 a 12:00 etc.
+    await this.sendConfigToDevice(formattedCode, device.patient_id);
   }
 
   async handleCompartmentEvent(
@@ -360,7 +419,7 @@ export class DevicesService {
     const isOpen = tipo === 'COMPARTIMENTO_ABIERTO';
     const newStatus = isOpen ? 'open' : 'closed';
 
-    // 1. Actualizar solo status en device_compartments (sin nueva tabla)
+    // 1. Actualizar solo status en device_compartments
     const existingComp = await this.prisma.device_compartments.findFirst({
       where: { device_id: device.id, compartment_number: compartmentNumber, deleted_at: null },
     });
@@ -393,7 +452,6 @@ export class DevicesService {
     // Normaliza a TZ de negocio (DB -0600) para no repetir el desfase UTC del scheduler
     const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
     // Ventana: 0-15m = Confirmado, 15-20m = Retraso, >20 o sin pendiente = alerta incorrecto
-    const windowConfirmMs = 15 * 60 * 1000;
     const windowRetrasoMs = 20 * 60 * 1000;
     const earliest = new Date(now.getTime() - windowRetrasoMs);
 
@@ -468,6 +526,8 @@ export class DevicesService {
       });
     }
     if (profileIds2.length) this.logger.log(`📩 Notificación compartimento enviada a ${profileIds2.length} cuidadores`);
+
+    await this.sendConfigToDevice(formattedCode, device.patient_id);
   }
 
   async handleSosAlert(deviceId: string) {
