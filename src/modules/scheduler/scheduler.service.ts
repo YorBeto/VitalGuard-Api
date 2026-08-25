@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { TreatmentsService } from '../treatments/treatments.service';
 
 @Injectable()
 export class SchedulerService {
@@ -14,6 +15,8 @@ export class SchedulerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
+    @Inject(forwardRef(() => TreatmentsService))
+    private readonly treatmentsService: TreatmentsService,
   ) {}
 
   /** Devuelve now convertido a la TZ de negocio sin depender del TZ del contenedor */
@@ -35,6 +38,7 @@ export class SchedulerService {
 
     await this.createPendingLogs(currentHour, currentMinute, today, now);
     await this.markOmittedLogs(today);
+    await this.autoFinalizeExpiredTreatments(now, today);
   }
 
   private async createPendingLogs(
@@ -166,6 +170,106 @@ export class SchedulerService {
           patientId,
           route: 'schedule',
         });
+      }
+    }
+  }
+
+  /** Auto-finaliza tratamientos vencidos esperando la última dosis (sin Pendientes). */
+  private async autoFinalizeExpiredTreatments(now: Date, today: Date) {
+    // Candidatos: no crónicos (end_date != null) y vencidos (end_date < today) o end_date == today pero ya pasó última dosis
+    // Usamos lte today para incluir los que vencen hoy (se validará ventana de última dosis)
+    const candidates = await this.prisma.treatments.findMany({
+      where: {
+        status: { in: ['Activo', 'Pausado'] as any },
+        deleted_at: null,
+        end_date: { not: null, lte: today },
+      },
+      include: {
+        treatment_details: {
+          where: { deleted_at: null },
+          select: { id: true, compartment_number: true },
+        },
+      },
+    });
+
+    if (candidates.length === 0) return;
+
+    for (const tr of candidates) {
+      const detailIds = tr.treatment_details.map((d) => d.id);
+      if (detailIds.length === 0) {
+        // Sin detalles: finaliza directo si ya venció
+        if (tr.end_date && new Date(tr.end_date) < today) {
+          try {
+            await this.treatmentsService.finalize(tr.id);
+            this.logger.log(`[AutoFinalize] Tratamiento ${tr.id} sin detalles finalizado (vencido ${new Date(tr.end_date).toISOString().slice(0,10)})`);
+          } catch (e: any) {
+            this.logger.warn(`[AutoFinalize] Falló ${tr.id}: ${e.message}`);
+          }
+        }
+        continue;
+      }
+
+      const schedules = await this.prisma.schedules.findMany({
+        where: { treatment_detail_id: { in: detailIds }, deleted_at: null },
+        select: { id: true, time_of_day: true },
+      });
+
+      if (schedules.length === 0) {
+        // Sin horarios: finaliza si venció
+        try {
+          await this.treatmentsService.finalize(tr.id);
+          this.logger.log(`[AutoFinalize] Tratamiento ${tr.id} sin horarios finalizado`);
+        } catch (e: any) {
+          this.logger.warn(`[AutoFinalize] Falló ${tr.id}: ${e.message}`);
+        }
+        continue;
+      }
+
+      // 1. Validar ventana de última dosis del día de end_date (esperar a última hora + omissionTimeout)
+      const endDate = new Date(tr.end_date as Date);
+      const endDateOnly = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+      // Max hora entre todos los schedules (última dosis del día)
+      let maxHour = -1, maxMinute = -1;
+      for (const s of schedules) {
+        const t = s.time_of_day as unknown as Date;
+        const h = t.getHours(); const m = t.getMinutes();
+        if (h > maxHour || (h === maxHour && m > maxMinute)) { maxHour = h; maxMinute = m; }
+      }
+      const lastDoseToday = new Date(endDateOnly.getTime());
+      lastDoseToday.setHours(maxHour, maxMinute, 0, 0);
+      const finalizeWindow = new Date(lastDoseToday.getTime() + this.omissionTimeoutMinutes * 60 * 1000);
+
+      // Si end_date es hoy y aún no pasa la ventana de la última dosis, espera
+      if (endDateOnly.getTime() === today.getTime() && now < finalizeWindow) {
+        this.logger.debug(`[AutoFinalize] Tratamiento ${tr.id} espera última dosis hasta ${finalizeWindow.toLocaleTimeString('es-MX')}`);
+        continue;
+      }
+      // Si end_date fue ayer o antes, finalizeWindow ya pasó, no bloquea
+
+      // 2. Verificar que no queden logs Pendiente para este tratamiento (hasta end_date inclusive)
+      const endOfEndDate = new Date(endDateOnly.getTime() + 24 * 60 * 60 * 1000 - 1);
+      const pendingCount = await this.prisma.medication_logs.count({
+        where: {
+          schedule_id: { in: schedules.map((s) => s.id) },
+          status: 'Pendiente',
+          deleted_at: null,
+          scheduled_datetime: { lte: endOfEndDate },
+        },
+      });
+      if (pendingCount > 0) {
+        this.logger.debug(`[AutoFinalize] Tratamiento ${tr.id} aún tiene ${pendingCount} dosis Pendiente, espera`);
+        continue;
+      }
+
+      // Listo para finalizar
+      try {
+        await this.treatmentsService.finalize(tr.id);
+        this.logger.log(`[AutoFinalize] Tratamiento ${tr.id} finalizado automáticamente (vencido ${endDateOnly.toISOString().slice(0,10)}, última dosis ${maxHour}:${String(maxMinute).padStart(2,'0')})`);
+      } catch (e: any) {
+        // Ya finalizado o error, ignora
+        if (!e.message?.includes('ya está finalizado')) {
+          this.logger.warn(`[AutoFinalize] Falló ${tr.id}: ${e.message}`);
+        }
       }
     }
   }

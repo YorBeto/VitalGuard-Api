@@ -64,6 +64,14 @@ export class TreatmentsController {
     return this.treatmentsService.update(id, dto);
   }
 
+  @Post(':id/finalize')
+  @ApiOperation({ summary: 'Finalizar un tratamiento (libera compartimentos y actualiza MQTT)' })
+  @ApiResponse({ status: 200, description: 'Tratamiento finalizado' })
+  @ApiResponse({ status: 404, description: 'Tratamiento no encontrado' })
+  async finalize(@Param('id', ParseIntPipe) id: number) {
+    return this.treatmentsService.finalize(id);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Eliminar un tratamiento (soft-delete en cascada)' })
   @ApiResponse({ status: 200, description: 'Tratamiento eliminado' })
