@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DevicesService } from '../devices/devices.service';
 import { CreateTreatmentDetailDto, UpdateTreatmentDetailDto } from './dto/treatment-detail.dto';
+import { parseDateOnly } from '../../common/timezone';
 
 @Injectable()
 export class TreatmentDetailsService {
@@ -37,14 +38,15 @@ export class TreatmentDetailsService {
       throw new NotFoundException('Medicamento no encontrado');
     }
 
+    const [h, m] = (dto.firstTakeTime || '08:00').split(':').map(Number);
     const detail = await this.prisma.treatment_details.create({
       data: {
         treatment_id: dto.treatmentId,
         medication_id: dto.medicationId,
         dose_info: dto.doseInfo ?? null,
         frequency_hours: dto.frequencyHours ?? 1,
-        first_take_time: new Date(`1970-01-01T${dto.firstTakeTime}`),
-        end_date: dto.endDate ? new Date(dto.endDate) : null,
+        first_take_time: new Date(1970, 0, 1, h || 8, m || 0, 0, 0),
+        end_date: dto.endDate ? parseDateOnly(dto.endDate) : null,
         compartment_number: dto.compartmentNumber ?? null,
         is_external: dto.isExternal ?? false,
         status: dto.status ?? 'En_curso',
@@ -75,8 +77,8 @@ export class TreatmentDetailsService {
         ...(dto.medicationId !== undefined && { medication_id: dto.medicationId }),
         ...(dto.doseInfo !== undefined && { dose_info: dto.doseInfo }),
         ...(dto.frequencyHours !== undefined && { frequency_hours: dto.frequencyHours }),
-        ...(dto.firstTakeTime !== undefined && { first_take_time: new Date(`1970-01-01T${dto.firstTakeTime}`) }),
-        ...(dto.endDate !== undefined && { end_date: dto.endDate ? new Date(dto.endDate) : null }),
+        ...(dto.firstTakeTime !== undefined && { first_take_time: (() => { const [hh, mm] = dto.firstTakeTime!.split(':').map(Number); return new Date(1970, 0, 1, hh, mm, 0, 0); })() }),
+        ...(dto.endDate !== undefined && { end_date: dto.endDate ? parseDateOnly(dto.endDate) : null }),
         ...(dto.compartmentNumber !== undefined && { compartment_number: dto.compartmentNumber }),
         ...(dto.isExternal !== undefined && { is_external: dto.isExternal }),
         ...(dto.status !== undefined && { status: dto.status }),

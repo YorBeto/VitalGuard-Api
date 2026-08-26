@@ -5,10 +5,10 @@ import { SosEventsService } from '../sos-events/sos-events.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { LinkDeviceDto } from './dto/link-device.dto';
+import { APP_TIMEZONE, nowInMonterrey, timeDateToMinutes, minutesToTimeString } from '../../common/timezone';
 
 @Injectable()
 export class DevicesService {
-  private readonly appTimeZone = 'America/Mexico_City';
   private readonly logger = new Logger(DevicesService.name);
 
   constructor(
@@ -138,7 +138,7 @@ export class DevicesService {
 
   /**
    * Genera los siguientes horarios pendientes para un detalle de tratamiento (máx. 4).
-   * Reemplaza la lógica anterior estática para cumplir el contrato del firmware.
+   * Usa minutos Monterrey (timeDateToMinutes) para ser independiente del TZ del contenedor.
    */
   private getHorariosForTreatmentDetail(now: Date, td: any): string[] {
     const schedules = td.schedules ?? [];
@@ -150,10 +150,9 @@ export class DevicesService {
     // Caso 1: Tratamiento recurrente con frecuencia (ej: cada 8 horas)
     if (freqHours > 0) {
       const firstSchedule = schedules[0].time_of_day as unknown as Date;
-      const baseMinutes = firstSchedule.getHours() * 60 + firstSchedule.getMinutes();
+      const baseMinutes = timeDateToMinutes(firstSchedule);
       const freqMinutes = freqHours * 60;
 
-      // Calcular el primer slot igual o posterior a la hora actual (con 2 min de holgura)
       let nextMinutes = baseMinutes;
       if (nowMinutes > baseMinutes + 2) {
         const slotsPassed = Math.floor((nowMinutes - baseMinutes) / freqMinutes) + 1;
@@ -161,12 +160,9 @@ export class DevicesService {
       }
 
       const generatedSlots: string[] = [];
-      // Generar hasta 4 slots proyectados (límite máximo del firmware ESP32)
       for (let i = 0; i < 4; i++) {
         const slot = (nextMinutes + i * freqMinutes) % (24 * 60);
-        const h = String(Math.floor(slot / 60)).padStart(2, '0');
-        const m = String(slot % 60).padStart(2, '0');
-        generatedSlots.push(`${h}:${m}`);
+        generatedSlots.push(minutesToTimeString(slot));
       }
       return generatedSlots;
     }
@@ -174,20 +170,17 @@ export class DevicesService {
     // Caso 2: Horarios específicos fijos definidos en schedules
     const formattedSchedules = schedules.map((s: any) => {
       const t = s.time_of_day as unknown as Date;
-      const min = t.getHours() * 60 + t.getMinutes();
+      const min = timeDateToMinutes(t);
       return {
         minutes: min,
-        formatted: `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`,
+        formatted: minutesToTimeString(min),
       };
     });
 
-    // Ordenar cronológicamente
     formattedSchedules.sort((a, b) => a.minutes - b.minutes);
 
-    // Filtrar horarios pendientes a partir de la hora actual
     let remaining = formattedSchedules.filter((s) => s.minutes >= nowMinutes - 2);
     if (remaining.length === 0) {
-      // Si ya pasaron todos hoy, enviar los primeros del día siguiente
       remaining = formattedSchedules;
     }
 
@@ -195,7 +188,7 @@ export class DevicesService {
   }
 
   async sendConfigToDevice(deviceId: string, patientId: number) {
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: this.appTimeZone }));
+    const now = nowInMonterrey();
     const treatments = await this.prisma.treatments.findMany({
       where: { patient_id: patientId, status: 'Activo', deleted_at: null },
       include: {
@@ -247,11 +240,12 @@ export class DevicesService {
     const config = {
       proximaToma,
       sosCountdownSeg: 10,
+      timezone: APP_TIMEZONE,
       medicamentos,
     };
 
     this.mqttClient.emit(`vitalguard/${deviceId}/config`, config);
-    this.logger.log(`📤 Config enviada a ${deviceId}: ${JSON.stringify(config)}`);
+    this.logger.log(`📤 Config enviada a ${deviceId} TZ=${APP_TIMEZONE}: ${JSON.stringify(config)}`);
   }
 
   async sendCommand(deviceId: string, accion: string, payload?: Record<string, any>) {
@@ -385,17 +379,30 @@ export class DevicesService {
 
     this.logger.log(`✅ TOMA_CONFIRMADA: Log #${pendingLog.id} marcado como ${status}. Tomada a las ${pendingLog.actual_taken_datetime}`);
 
-    // Notifica a TODOS los cuidadores vinculados
+    // Notifica a TODOS los cuidadores vinculados (con push FCM+WS + deduplicación)
     const profileIds = await this.notificationsService.caregiverProfilesForPatient(device.patient_id);
     for (const pid of profileIds) {
-      await this.prisma.notifications.create({
-        data: {
+      // Anti-spam: si ya notificamos toma confirmada hace <2 min, skip duplicado
+      const recent = await this.prisma.notifications.findFirst({
+        where: {
           app_profile_id: pid,
           patient_id: device.patient_id,
-          title: 'Toma confirmada',
-          message: 'El paciente confirmó la toma de su medicamento desde el dispositivo',
           type: 'DOSIS_RECORDATORIO',
+          title: 'Toma confirmada',
+          created_at: { gte: new Date(Date.now() - 2 * 60 * 1000) },
+          deleted_at: null,
         },
+      });
+      if (recent) {
+        this.logger.log(`[TOMA_CONFIRMADA] skip push duplicado para profile ${pid} (toma reciente #${recent.id})`);
+        continue;
+      }
+      await this.notificationsService.createAndPush(pid, {
+        title: 'Toma confirmada',
+        message: 'El paciente confirmó la toma de su medicamento desde el dispositivo',
+        type: 'DOSIS_RECORDATORIO',
+        patientId: device.patient_id,
+        metadata: { device_code: formattedCode, log_id: pendingLog.id } as any,
       });
     }
 
@@ -449,8 +456,7 @@ export class DevicesService {
     // Solo validar al ABRIR, al cerrar solo actualizamos estado
     if (!isOpen) return;
 
-    // Normaliza a TZ de negocio (DB -0600) para no repetir el desfase UTC del scheduler
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+    const now = nowInMonterrey();
     // Ventana: 0-15m = Confirmado, 15-20m = Retraso, >20 o sin pendiente = alerta incorrecto
     const windowRetrasoMs = 20 * 60 * 1000;
     const earliest = new Date(now.getTime() - windowRetrasoMs);
@@ -506,26 +512,54 @@ export class DevicesService {
 
     this.logger.warn(`🚨 [Compartimento] ${title} device=${formattedCode} comp=${compartmentNumber} esperados=${expectedStr} (Plan B: sin audio, firmware ya sonó)`);
 
-    // Notificación a TODOS los cuidadores vinculados (reusa DOSIS_RECORDATORIO para no migrar prod)
+    // Notificación a TODOS los cuidadores vinculados con throttling 5 min por compartimento
     const profileIds2 = await this.notificationsService.caregiverProfilesForPatient(device.patient_id);
     for (const pid of profileIds2) {
-      await this.prisma.notifications.create({
-        data: {
+      // Anti-spam: máximo 1 notificación de compartimento incorrecto/fuera horario cada 5 min por paciente+compartimento
+      const recentWrong = await this.prisma.notifications.findFirst({
+        where: {
           app_profile_id: pid,
           patient_id: device.patient_id,
-          title,
-          message,
           type: 'DOSIS_RECORDATORIO',
-          metadata: {
-            device_code: formattedCode,
-            compartimento_abierto: compartmentNumber,
-            compartimentos_esperados: expectedSet,
-            fuera_ventana: pendingLogs.length === 0 && expectedSet.length === 0,
-          } as any,
+          title: { in: ['Compartimento incorrecto', 'Apertura fuera de horario'] },
+          created_at: { gte: new Date(Date.now() - 5 * 60 * 1000) },
+          metadata: { path: ['compartimento_abierto'], equals: compartmentNumber },
+          deleted_at: null,
         },
       });
+      if (recentWrong) {
+        this.logger.log(`[Compartimento] skip notificación throttled para profile ${pid} comp ${compartmentNumber} (reciente #${recentWrong.id})`);
+        continue;
+      }
+      // También limita global por paciente: máx 3 notificaciones de compartimento cada 10 min
+      const recentCount = await this.prisma.notifications.count({
+        where: {
+          app_profile_id: pid,
+          patient_id: device.patient_id,
+          type: 'DOSIS_RECORDATORIO',
+          title: { in: ['Compartimento incorrecto', 'Apertura fuera de horario'] },
+          created_at: { gte: new Date(Date.now() - 10 * 60 * 1000) },
+          deleted_at: null,
+        },
+      });
+      if (recentCount >= 3) {
+        this.logger.warn(`[Compartimento] skip notificación por flood control para profile ${pid} (${recentCount} en 10m)`);
+        continue;
+      }
+      await this.notificationsService.createAndPush(pid, {
+        title,
+        message,
+        type: 'DOSIS_RECORDATORIO',
+        patientId: device.patient_id,
+        metadata: {
+          device_code: formattedCode,
+          compartimento_abierto: compartmentNumber,
+          compartimentos_esperados: expectedSet,
+          fuera_ventana: pendingLogs.length === 0 && expectedSet.length === 0,
+        } as any,
+      });
     }
-    if (profileIds2.length) this.logger.log(`📩 Notificación compartimento enviada a ${profileIds2.length} cuidadores`);
+    if (profileIds2.length) this.logger.log(`📩 Notificación compartimento enviada (con throttling) a cuidadores`);
 
     await this.sendConfigToDevice(formattedCode, device.patient_id);
   }

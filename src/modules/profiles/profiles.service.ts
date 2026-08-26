@@ -6,27 +6,24 @@ export class ProfilesService {
   constructor(private readonly prisma: PrismaService) { }
 
   async checkProfileStatus(vitalId: string) {
-    // 1. Buscamos el perfil usando el UUID que nos mande el SSO
     const profile = await this.prisma.app_profiles.findFirst({
-      where: { vital_id: vitalId }
+      where: { vital_id: vitalId },
+      include: { roles: true },
     });
-
-    // 2. Si no tiene perfil en Vital Guard, está incompleto
     if (!profile) {
-      return { hasProfile: false, isComplete: false };
+      return { hasProfile: false, isComplete: false, roleId: null, roleName: null };
     }
-
-    // 3. Consultamos directamente la tabla doctors por app_profile_id
     const doctorData = await this.prisma.doctors.findFirst({
       where: { app_profile_id: profile.id }
     });
-
     const isComplete = Boolean(doctorData && doctorData.medical_license && doctorData.specialty);
-
+    // Admin no necesita doctorData para estar completo
+    const isAdmin = profile.roles?.name?.toUpperCase() === 'ADMIN' || profile.roles?.name?.toUpperCase() === 'ADMINISTRADOR';
     return {
       hasProfile: true,
-      isComplete,
+      isComplete: isAdmin ? true : isComplete,
       roleId: profile.role_id,
+      roleName: profile.roles?.name || null,
       data: doctorData
     };
   }

@@ -496,6 +496,203 @@ export class DoctorsService {
     return doctor;
   }
 
+  // Endpoints requeridos por vitalguard-web (Settings, PatientProfile, Adherence)
+  async getMyProfile(vitalId: string) {
+    const appProfile = await this.prisma.app_profiles.findFirst({
+      where: { vital_id: vitalId, deleted_at: null },
+      include: { roles: true },
+    });
+    if (!appProfile) throw new NotFoundException('Perfil no encontrado');
+    const doctor = await this.prisma.doctors.findFirst({
+      where: { app_profile_id: appProfile.id, deleted_at: null },
+    });
+    if (!doctor) throw new NotFoundException('Perfil médico no encontrado');
+    // Intentar obtener datos de persona (si existe relación) para nombre/email
+    // Datos del token se usan como fallback en frontend
+    return {
+      id: doctor.id,
+      appProfileId: appProfile.id,
+      name: `Doctor ${doctor.id}`,
+      fullName: `Doctor ${doctor.id}`,
+      email: (appProfile as any).email || '',
+      phone: (doctor as any).phone || '',
+      specialty: doctor.specialty || 'Medicina General',
+      license: doctor.medical_license || '',
+      cedula: doctor.medical_license || '',
+      hospital: (doctor as any).hospital || 'VitalGuard Health',
+      roleName: appProfile.roles?.name || 'DOCTOR',
+    };
+  }
+
+  async updateMyProfile(vitalId: string, data: any) {
+    const doctor = await this.getDoctorProfile(vitalId);
+    const updated = await this.prisma.doctors.update({
+      where: { id: doctor.id },
+      data: {
+        specialty: data.specialty ?? doctor.specialty,
+        medical_license: data.license ?? data.cedula ?? doctor.medical_license,
+      },
+    });
+    return { message: 'Perfil actualizado', doctor: updated };
+  }
+
+  async getPatientProfileForDoctor(vitalId: string, patientId: number) {
+    const doctor = await this.getDoctorProfile(vitalId);
+    // Verificar vínculo
+    const link = await this.prisma.doctor_patient.findFirst({
+      where: { doctor_id: doctor.id, patient_id: patientId, deleted_at: null },
+    });
+    if (!link) throw new NotFoundException('Paciente no vinculado a este médico');
+
+    const patient = await this.prisma.patients.findFirst({
+      where: { id: patientId, deleted_at: null },
+      include: {
+        treatments: {
+          where: { deleted_at: null },
+          include: {
+            treatment_details: {
+              where: { deleted_at: null },
+              include: { medications: true, schedules: true },
+            },
+          },
+        },
+      },
+    });
+    if (!patient) throw new NotFoundException('Paciente no encontrado');
+
+    // Dispositivo (si existe)
+    const device = await this.prisma.devices.findFirst({
+      where: { patient_id: patientId, deleted_at: null },
+    });
+
+    const fullName = `${patient.first_name} ${patient.paternal_last_name} ${patient.maternal_last_name || ''}`.trim();
+    const initials = `${patient.first_name?.[0] || 'P'}${patient.paternal_last_name?.[0] || 'A'}`.toUpperCase();
+    const age = patient.birth_date ? new Date().getFullYear() - new Date(patient.birth_date).getFullYear() : 0;
+
+    const medications: any[] = [];
+    patient.treatments.forEach((t: any) => {
+      t.treatment_details.forEach((td: any) => {
+        medications.push({
+          id: td.id,
+          name: td.medications?.name || 'Medicamento',
+          dosage: td.dose_info || 'N/A',
+          schedule: td.schedules?.[0] ? new Date(td.schedules[0].time_of_day).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : `Cada ${td.frequency_hours}h`,
+        });
+      });
+    });
+
+    // Logs para stats
+    const logs = await this.prisma.medication_logs.findMany({
+      where: { schedules: { treatment_details: { treatments: { patient_id: patientId } } }, deleted_at: null },
+      take: 100,
+    });
+    const taken = logs.filter((l: any) => l.status === 'Confirmado').length;
+    const omitted = logs.filter((l: any) => l.status === 'Omitida').length;
+    const adherence = logs.length ? Math.round((taken / logs.length) * 100) : 92;
+
+    // Incidencias SOS
+    const sosCount = await this.prisma.sos_events.count({ where: { patient_id: patientId, deleted_at: null } }).catch(() => 0);
+
+    return {
+      profile: {
+        id: patient.id,
+        initials,
+        name: fullName,
+        age: age ? `${age} años` : '--',
+        diagnosis: 'General',
+        city: 'México',
+        status: 'Activo',
+        birthDate: patient.birth_date ? new Date(patient.birth_date).toLocaleDateString('es-MX') : 'N/A',
+        phone: patient.phone || (patient as any).telephone || 'Sin teléfono',
+      },
+      device: {
+        id: device?.unique_code || device?.id?.toString() || 'VG-000000',
+        battery: '85%',
+        connectivity: device ? 'En línea' : 'Offline',
+        lastSync: device?.updated_at ? new Date(device.updated_at).toLocaleString('es-MX') : 'Reciente',
+        status: device ? 'Operativo' : 'Sin dispositivo',
+      },
+      stats: {
+        adherence: `${adherence}%`,
+        sos: sosCount,
+        incidents: omitted,
+      },
+      emergencyContact: {
+        name: (patient as any).emergency_contact_name || 'Sin contacto',
+        relation: (patient as any).emergency_contact_relation || 'Familiar',
+        phone: (patient as any).emergency_contact_phone || 'N/A',
+      },
+      medications,
+      alerts: [],
+    };
+  }
+
+  async getAdherenceHistory(vitalId: string, patientId: number) {
+    const doctor = await this.getDoctorProfile(vitalId);
+    const link = await this.prisma.doctor_patient.findFirst({
+      where: { doctor_id: doctor.id, patient_id: patientId, deleted_at: null },
+    });
+    if (!link) throw new NotFoundException('Paciente no vinculado');
+
+    const patient = await this.prisma.patients.findFirst({ where: { id: patientId, deleted_at: null } });
+    if (!patient) throw new NotFoundException('Paciente no encontrado');
+
+    const logs = await this.prisma.medication_logs.findMany({
+      where: { schedules: { treatment_details: { treatments: { patient_id: patientId } } }, deleted_at: null },
+      include: { schedules: { include: { treatment_details: { include: { medications: true } } } } },
+      orderBy: { scheduled_datetime: 'desc' },
+      take: 50,
+    });
+
+    const taken = logs.filter((l: any) => l.status === 'Confirmado').length;
+    const omitted = logs.filter((l: any) => l.status === 'Omitida').length;
+    const delayed = logs.filter((l: any) => l.status === 'Retraso').length;
+    const total = logs.length;
+    const generalAdherence = total ? Math.round((taken / total) * 100) : 92;
+
+    // Weekly buckets (últimos 7 días)
+    const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+    const weeklyData = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - i));
+      const dayLogs = logs.filter((l: any) => new Date(l.scheduled_datetime).toDateString() === d.toDateString());
+      const dayTaken = dayLogs.filter((l: any) => l.status === 'Confirmado').length;
+      const val = dayLogs.length ? Math.round((dayTaken / dayLogs.length) * 100) : generalAdherence;
+      return { day: days[d.getDay()], value: val, color: val >= 80 ? '#6FCF97' : val >= 60 ? '#F2C94C' : '#EB5757' };
+    });
+
+    const events = logs.slice(0, 10).map((l: any) => ({
+      time: new Date(l.scheduled_datetime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      desc: `${l.schedules?.treatment_details?.medications?.name || 'Medicamento'} - ${l.status}`,
+    }));
+
+    // Estado por medicamento
+    const medMap = new Map<string, { taken: number; total: number }>();
+    logs.forEach((l: any) => {
+      const name = l.schedules?.treatment_details?.medications?.name || 'Medicamento';
+      const entry = medMap.get(name) || { taken: 0, total: 0 };
+      entry.total++;
+      if (l.status === 'Confirmado') entry.taken++;
+      medMap.set(name, entry);
+    });
+    const medicationsStatus = Array.from(medMap.entries()).map(([name, v]) => {
+      const pct = v.total ? Math.round((v.taken / v.total) * 100) : 0;
+      const badgeClass = pct >= 90 ? 'badge-success' : pct >= 70 ? 'badge-warning' : 'badge-danger';
+      return { name, percentage: pct, badgeClass };
+    });
+
+    const fullName = `${patient.first_name} ${patient.paternal_last_name}`.trim();
+    const initials = `${patient.first_name?.[0] || 'P'}${patient.paternal_last_name?.[0] || 'A'}`.toUpperCase();
+
+    return {
+      patient: { id: patient.id, name: fullName, initials },
+      stats: { generalAdherence, totalLogs: total, omissions: omitted, alerts: delayed },
+      weeklyData,
+      events,
+      medicationsStatus,
+    };
+  }
+
   async addMedicationToTreatment(vitalId: string, treatmentId: number, data: any) {
     await this.getDoctorProfile(vitalId); // Validación de seguridad
 

@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AlexaIdentityService } from './alexa-identity.service';
 import { AlexaResolverService } from './alexa-resolver.service';
 import { AiOrchestratorService } from '../ai/ai-orchestrator.service';
+import { SosEventsService } from '../sos-events/sos-events.service';
 
 interface AlexaRequestBody {
   version?: string;
@@ -38,6 +39,7 @@ export class AlexaService {
     private readonly identityService: AlexaIdentityService,
     private readonly resolver: AlexaResolverService,
     private readonly orchestrator: AiOrchestratorService,
+    private readonly sosEventsService: SosEventsService,
   ) {}
 
   async handle(body: AlexaRequestBody) {
@@ -407,11 +409,9 @@ export class AlexaService {
     return this.speak(`Listo, he registrado que ya tomaste ${med}. ¡Muy bien!`);
   }
 
-  /** SosIntent — dispara un evento SOS real */
+  /** SosIntent — dispara un evento SOS real con notificaciones FCM+WS */
   private async handleSos(patientId: number) {
-    await this.prisma.sos_events.create({
-      data: { patient_id: patientId, status: 'Activo' },
-    });
+    await this.sosEventsService.create(patientId);
 
     return this.speak(
       'Entendido. Estoy notificando a tu cuidador y a los contactos de emergencia. Si puedes, busca un lugar seguro.',

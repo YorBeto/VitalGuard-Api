@@ -12,6 +12,7 @@ export interface CreateNotificationInput {
   patientId?: number | null;
   metadata?: Prisma.InputJsonValue;
   route?: string;
+  priority?: 'high' | 'normal' | 'low';
 }
 
 @Injectable()
@@ -218,14 +219,12 @@ export class NotificationsService {
     body: string,
     data?: Record<string, string>,
   ) {
-    // WS: emitir evento liviano (para casos donde la notificación ya existe en BD)
     try {
       const profile = await this.prisma.app_profiles.findUnique({
         where: { id: appProfileId },
         select: { vital_id: true },
       });
       if (profile) {
-        // Si data trae id, lo usamos para buscar la notificación real
         if (data?.id) {
           const notif = await this.prisma.notifications.findUnique({ where: { id: Number(data.id) } });
           if (notif) this.realtimeService.emitToVital(profile.vital_id, 'notification:new', notif);
@@ -237,6 +236,14 @@ export class NotificationsService {
     } catch {}
     const tokens = await this.getTokens(appProfileId);
     const type = data?.type;
+    // Prioridad por tipo: SOS=critical/high, Dosis/Inc invit=high, resto normal
+    const priorityMap: Record<string, 'high' | 'normal'> = {
+      SOS_ALERTA: 'high',
+      DOSIS_RECORDATORIO: 'high',
+      INVITACION_CUIDADOR: 'high',
+      MEDICAMENTO_SOLICITUD: 'normal',
+      SISTEMA: 'normal',
+    };
     await this.fcmService.send({
       tokens,
       title,
@@ -249,8 +256,8 @@ export class NotificationsService {
             ? 'vitalguard_invitations'
             : type === 'DOSIS_RECORDATORIO'
               ? 'vitalguard_medication'
-              : undefined,
-      priority: type === 'SOS_ALERTA' ? 'high' : 'high',
+              : 'vitalguard_high_importance',
+      priority: (priorityMap[type ?? ''] ?? 'normal') as 'high' | 'normal',
     });
   }
 
@@ -344,6 +351,11 @@ export class NotificationsService {
     Object.keys(data).forEach((k) => {
       if (!data[k]) delete data[k];
     });
+    // Prioridad refinada por tipo + metadata (omitida/correcta vs confirmada)
+    const isHigh =
+      input.type === 'SOS_ALERTA' ||
+      input.type === 'DOSIS_RECORDATORIO' ||
+      input.type === 'INVITACION_CUIDADOR';
     await this.fcmService.send({
       tokens: await this.getTokens(appProfileId),
       title: input.title,
@@ -356,8 +368,8 @@ export class NotificationsService {
             ? 'vitalguard_invitations'
             : input.type === 'DOSIS_RECORDATORIO'
               ? 'vitalguard_medication'
-              : undefined,
-      priority: input.type === 'SOS_ALERTA' ? 'high' : 'high',
+              : 'vitalguard_high_importance',
+      priority: (input.priority ?? (isHigh ? 'high' : 'normal')) as 'high' | 'normal',
     });
     return notif;
   }

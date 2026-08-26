@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DevicesService } from '../devices/devices.service';
 import { CreateScheduleDto } from './dto/schedule.dto';
+import { timeStringToMinutes } from '../../common/timezone';
 
 @Injectable()
 export class SchedulesService {
@@ -44,10 +45,15 @@ export class SchedulesService {
       throw new NotFoundException('Treatment detail no encontrado');
     }
 
+    // Guarda TIME como Date 1970-01-01 HH:MM en TZ Monterrey (server TZ=America/Mexico_City)
+    const normalizedTime = dto.timeOfDay.includes(':') && dto.timeOfDay.split(':').length === 2 ? `${dto.timeOfDay}:00` : dto.timeOfDay;
+    const [hStr, mStr] = normalizedTime.split(':');
+    const h = Number(hStr) || 0; const m = Number(mStr) || 0;
+    timeStringToMinutes(normalizedTime);
     const schedule = await this.prisma.schedules.create({
       data: {
         treatment_detail_id: dto.treatmentDetailId,
-        time_of_day: new Date(`1970-01-01T${dto.timeOfDay}`),
+        time_of_day: new Date(1970, 0, 1, h, m, 0, 0),
       },
     });
 

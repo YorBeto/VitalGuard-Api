@@ -121,6 +121,30 @@ export class DoctorsController {
     return this.doctorsService.removeMedicationFromTreatment(vitalId, detailId);
   }
 
+  @Get('profile')
+  @ApiOperation({ summary: 'Obtener perfil del médico autenticado' })
+  async getMyProfile(@GetVitalId() vitalId: string) {
+    return this.doctorsService.getMyProfile(vitalId);
+  }
+
+  @Put('profile')
+  @ApiOperation({ summary: 'Actualizar perfil del médico' })
+  async updateMyProfile(@GetVitalId() vitalId: string, @Body() body: any) {
+    return this.doctorsService.updateMyProfile(vitalId, body);
+  }
+
+  @Get('patients/:patientId')
+  @ApiOperation({ summary: 'Obtener expediente de un paciente del médico' })
+  async getPatientProfile(@GetVitalId() vitalId: string, @Param('patientId', ParseIntPipe) patientId: number) {
+    return this.doctorsService.getPatientProfileForDoctor(vitalId, patientId);
+  }
+
+  @Get('patients/:patientId/adherence-history')
+  @ApiOperation({ summary: 'Historial de adherencia de un paciente' })
+  async getAdherenceHistory(@GetVitalId() vitalId: string, @Param('patientId', ParseIntPipe) patientId: number) {
+    return this.doctorsService.getAdherenceHistory(vitalId, patientId);
+  }
+
   @Get('reports')
   async getReportsData(@GetVitalId() vitalId: string) {
     return this.doctorsService.getReportsDashboard(vitalId);

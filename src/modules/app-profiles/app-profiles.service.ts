@@ -22,15 +22,36 @@ export class AppProfilesService {
       throw new ConflictException('El usuario ya completó el onboarding previamente');
     }
 
+    if (!vitalId) {
+      throw new BadRequestException('Vital ID no proporcionado (token inválido)');
+    }
+
     // 2. Transacción de Prisma para garantizar atomicidad
     return await this.prisma.$transaction(async (tx) => {
       // 💡 En la App Móvil, la persona que opera la app SIEMPRE es CAREGIVER
-      const caregiverRole = await tx.roles.findFirst({
+      // Auto-crea el rol si no existe (evita 500 si la BD no fue seedeada)
+      let caregiverRole = await tx.roles.findFirst({
         where: { name: 'CAREGIVER', app_name: 'MOBILE', deleted_at: null },
       });
 
       if (!caregiverRole) {
-        throw new NotFoundException('El rol CAREGIVER para MOBILE no está configurado en la base de datos');
+        // Intenta crear, si hay carrera concurrente usa findFirst de nuevo
+        try {
+          caregiverRole = await tx.roles.create({
+            data: { name: 'CAREGIVER', app_name: 'MOBILE', is_system: true },
+          });
+        } catch (e: any) {
+          // Si falla por unique constraint, re-intenta find
+          if (e.code === 'P2002') {
+            caregiverRole = await tx.roles.findFirst({
+              where: { name: 'CAREGIVER', app_name: 'MOBILE', deleted_at: null },
+            });
+          }
+          if (!caregiverRole) throw e;
+        }
+        if (!caregiverRole) {
+          throw new NotFoundException('No se pudo crear/recuperar el rol CAREGIVER para MOBILE');
+        }
       }
 
       // Crear el perfil de app SIEMPRE como CAREGIVER

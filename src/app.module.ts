@@ -28,7 +28,8 @@ import { ProfilesModule } from './modules/profiles/profiles.module';
 
 @Module({
   imports: [
-    ScheduleModule.forRoot(),
+    ScheduleModule.forRoot(), // cron usa TZ America/Mexico_City por defecto vía @Cron({timeZone}) en cada job
+
     PrismaModule,
     EmailCacheModule,
     RealtimeModule,

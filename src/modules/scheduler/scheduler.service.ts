@@ -3,14 +3,20 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TreatmentsService } from '../treatments/treatments.service';
+import {
+  APP_TIMEZONE,
+  nowInMonterrey,
+  todayInMonterrey,
+  parseDateOnly,
+  timeDateToMinutes,
+  buildScheduledDatetime,
+} from '../../common/timezone';
 
 @Injectable()
 export class SchedulerService {
   private readonly logger = new Logger(SchedulerService.name);
   /** Ventana de escalado antes de marcar una dosis como omitida y avisar a cuidadores. */
   private readonly omissionTimeoutMinutes = 15;
-  /** TZ canónica del sistema (DB está en America/Mexico_City -0600, backend en UTC) */
-  private readonly appTimeZone = 'America/Mexico_City';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -19,22 +25,18 @@ export class SchedulerService {
     private readonly treatmentsService: TreatmentsService,
   ) {}
 
-  /** Devuelve now convertido a la TZ de negocio sin depender del TZ del contenedor */
   private nowInAppTz(): Date {
-    const now = new Date();
-    // Truco: formatea en la TZ y reconstruye como Date local para getHours/getMinutes coherentes
-    const str = now.toLocaleString('en-US', { timeZone: this.appTimeZone });
-    return new Date(str);
+    return nowInMonterrey();
   }
 
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron(CronExpression.EVERY_MINUTE, { timeZone: APP_TIMEZONE })
   async handleScheduleTick() {
     const now = this.nowInAppTz();
     const currentHour = now.getHours();
     const currentMinute = now.getMinutes();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const today = todayInMonterrey();
 
-    this.logger.debug(`Scheduler tick: ${currentHour}:${String(currentMinute).padStart(2, '0')} TZ=${this.appTimeZone}`);
+    this.logger.debug(`Scheduler tick: ${currentHour}:${String(currentMinute).padStart(2, '0')} TZ=${APP_TIMEZONE}`);
 
     await this.createPendingLogs(currentHour, currentMinute, today, now);
     await this.markOmittedLogs(today);
@@ -68,13 +70,13 @@ export class SchedulerService {
     });
 
     let created = 0;
+    const currentMinutes = currentHour * 60 + currentMinute;
 
     for (const schedule of schedules) {
       const time = schedule.time_of_day as unknown as Date;
-      const scheduleHour = time.getHours();
-      const scheduleMinute = time.getMinutes();
+      const scheduleMinutes = timeDateToMinutes(time);
 
-      if (scheduleHour !== currentHour || scheduleMinute !== currentMinute) {
+      if (scheduleMinutes !== currentMinutes) {
         continue;
       }
 
@@ -91,10 +93,11 @@ export class SchedulerService {
 
       if (existingLog) continue;
 
+      const scheduledDatetime = buildScheduledDatetime(today, timeDateToMinutes(time as unknown as Date));
       await this.prisma.medication_logs.create({
         data: {
           schedule_id: schedule.id,
-          scheduled_datetime: now,
+          scheduled_datetime: scheduledDatetime,
           status: 'Pendiente',
         },
       });
@@ -197,11 +200,12 @@ export class SchedulerService {
     for (const tr of candidates) {
       const detailIds = tr.treatment_details.map((d) => d.id);
       if (detailIds.length === 0) {
-        // Sin detalles: finaliza directo si ya venció
-        if (tr.end_date && new Date(tr.end_date) < today) {
+        // Sin detalles: finaliza directo si ya venció (compara por día)
+        const trEnd = parseDateOnly(tr.end_date as unknown as string | Date);
+        if (trEnd && trEnd < today) {
           try {
             await this.treatmentsService.finalize(tr.id);
-            this.logger.log(`[AutoFinalize] Tratamiento ${tr.id} sin detalles finalizado (vencido ${new Date(tr.end_date).toISOString().slice(0,10)})`);
+            this.logger.log(`[AutoFinalize] Tratamiento ${tr.id} sin detalles finalizado (vencido ${trEnd.toISOString().slice(0,10)})`);
           } catch (e: any) {
             this.logger.warn(`[AutoFinalize] Falló ${tr.id}: ${e.message}`);
           }
@@ -226,15 +230,16 @@ export class SchedulerService {
       }
 
       // 1. Validar ventana de última dosis del día de end_date (esperar a última hora + omissionTimeout)
-      const endDate = new Date(tr.end_date as Date);
+      const endDate = parseDateOnly(tr.end_date as unknown as string | Date)!;
       const endDateOnly = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
-      // Max hora entre todos los schedules (última dosis del día)
-      let maxHour = -1, maxMinute = -1;
+      // Max hora entre todos los schedules (última dosis del día) - usa Monterrey
+      let maxMinutes = -1;
       for (const s of schedules) {
-        const t = s.time_of_day as unknown as Date;
-        const h = t.getHours(); const m = t.getMinutes();
-        if (h > maxHour || (h === maxHour && m > maxMinute)) { maxHour = h; maxMinute = m; }
+        const m = timeDateToMinutes(s.time_of_day as unknown as Date);
+        if (m > maxMinutes) maxMinutes = m;
       }
+      const maxHour = Math.floor(maxMinutes / 60);
+      const maxMinute = maxMinutes % 60;
       const lastDoseToday = new Date(endDateOnly.getTime());
       lastDoseToday.setHours(maxHour, maxMinute, 0, 0);
       const finalizeWindow = new Date(lastDoseToday.getTime() + this.omissionTimeoutMinutes * 60 * 1000);

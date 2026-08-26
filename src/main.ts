@@ -5,6 +5,9 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { Transport, MicroserviceOptions } from '@nestjs/microservices';
 import { HttpLoggerInterceptor } from './common/interceptors/http-logger.interceptor';
 
+// Fuerza TZ de negocio para que new Date() y cron usen Monterrey por defecto
+process.env.TZ = process.env.TZ || 'America/Mexico_City';
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: ['log', 'error', 'warn', 'debug', 'verbose'],
@@ -24,7 +27,7 @@ async function bootstrap() {
   app.enableCors({
     origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type, Accept, Authorization',
+    allowedHeaders: 'Content-Type, Accept, Authorization, X-Timezone',
   });
 
   // Configuración de microservicio MQTT con tiempo de espera bajo

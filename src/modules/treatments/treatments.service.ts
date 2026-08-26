@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { DevicesService } from '../devices/devices.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateTreatmentDto, UpdateTreatmentDto } from './dto/treatment.dto';
+import { parseDateOnly } from '../../common/timezone';
 
 @Injectable()
 export class TreatmentsService {
@@ -67,8 +68,8 @@ export class TreatmentsService {
     const treatment = await this.prisma.treatments.create({
       data: {
         patient_id: dto.patientId,
-        start_date: new Date(dto.startDate),
-        end_date: dto.endDate ? new Date(dto.endDate) : null,
+        start_date: parseDateOnly(dto.startDate)!,
+        end_date: dto.endDate ? parseDateOnly(dto.endDate) : null,
         status: dto.status ?? 'Activo',
       },
     });
@@ -94,7 +95,7 @@ export class TreatmentsService {
     const updatedTreatment = await this.prisma.treatments.update({
       where: { id },
       data: {
-        ...(dto.endDate !== undefined && { end_date: dto.endDate ? new Date(dto.endDate) : null }),
+        ...(dto.endDate !== undefined && { end_date: dto.endDate ? parseDateOnly(dto.endDate) : null }),
         ...(dto.status !== undefined && { status: dto.status }),
       },
     });

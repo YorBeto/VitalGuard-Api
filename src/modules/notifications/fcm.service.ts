@@ -139,6 +139,7 @@ export class FcmService {
     this.logger.log(`[FCM] Enviando push title="${message.title}" type=${message.data?.type ?? '-'} tokens=${message.tokens.length} channel=${this.resolveChannel(message)}`);
     const type = message.data?.type;
     const isSos = type === 'SOS_ALERTA';
+    const isHigh = message.priority === 'high' || isSos;
     const channelId = this.resolveChannel(message);
     try {
       const response = await getMessaging().sendEachForMulticast({
@@ -146,23 +147,25 @@ export class FcmService {
         notification: { title: message.title, body: message.body },
         data: message.data ?? {},
         android: {
-          priority: (message.priority ?? (isSos ? 'high' : 'high')) as 'high',
+          priority: (isHigh ? 'high' : 'normal') as 'high' | 'normal',
           notification: {
             channelId,
-            priority: 'high',
+            priority: (isHigh ? 'high' : 'default') as any,
             visibility: 'public',
             ...(isSos ? { sound: 'default', sticky: false } : {}),
           },
         },
         apns: {
-          headers: { 'apns-priority': isSos ? '10' : '5' },
+          headers: { 'apns-priority': isSos ? '10' : isHigh ? '10' : '5' },
           payload: {
             aps: {
-              sound: 'default',
+              sound: isSos ? 'default' : isHigh ? 'default' : undefined,
               badge: 1,
               ...(isSos
                 ? { 'interruption-level': 'critical' as any }
-                : {}),
+                : isHigh
+                  ? { 'interruption-level': 'active' as any }
+                  : { 'interruption-level': 'passive' as any }),
             },
           },
         },
