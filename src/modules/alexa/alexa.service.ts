@@ -122,8 +122,12 @@ export class AlexaService {
         console.log('[Alexa] ConsultarTomasIntent -> consulta de próxima toma');
         return this.handleCheckSchedule(patientId!);
       case 'TomarMedicinaIntent':
-        console.log('[Alexa] TomarMedicinaIntent -> marcar toma como tomada');
+      case 'ConfirmarTomaIntent':
+        console.log(`[Alexa] ${intentName} -> marcar toma como tomada`);
         return this.handleMarkTaken(patientId!);
+      case 'ListarTomasHoyIntent':
+        console.log('[Alexa] ListarTomasHoyIntent -> lista tomas del día');
+        return this.handleListToday(patientId!);
       case 'SosIntent':
         console.log('[Alexa] SosIntent -> disparar SOS');
         return this.handleSos(patientId!);
@@ -213,6 +217,101 @@ export class AlexaService {
   private genericPromptForIntent(intentName: string | undefined): string {
     void intentName;
     return '';
+  }
+
+  /** ListarTomasHoyIntent — lista todas las tomas del día (read-only, no toca MQTT) */
+  private async handleListToday(patientId: number) {
+    try {
+      // Reuse same source as SchedulesService.findToday — read-only
+      const schedules = await this.prisma.schedules.findMany({
+        where: {
+          treatment_details: {
+            treatments: { patient_id: patientId, deleted_at: null },
+            deleted_at: null,
+          },
+          deleted_at: null,
+        },
+        include: {
+          treatment_details: {
+            include: { medications: true },
+          },
+        },
+      });
+
+      if (schedules.length === 0) {
+        return this.speak(
+          'No tienes tomas programadas para hoy. Consulta tu aplicación para más detalles.',
+        );
+      }
+
+      // Ordenar por hora del día
+      const sorted = schedules
+        .map((s) => {
+          const t = new Date(s.time_of_day);
+          const minutes = t.getHours() * 60 + t.getMinutes();
+          const hh = String(t.getHours()).padStart(2, '0');
+          const mm = String(t.getMinutes()).padStart(2, '0');
+          return { s, minutes, hhmm: `${hh}:${mm}` };
+        })
+        .sort((a, b) => a.minutes - b.minutes);
+
+      // Buscar logs de hoy para enriquecer con estado (Pendiente/Confirmado/Retraso/Omitida)
+      const nowTz = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+      const start = new Date(nowTz);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(nowTz);
+      end.setHours(23, 59, 59, 999);
+
+      const scheduleIds = schedules.map((s) => s.id);
+      const logs = await this.prisma.medication_logs.findMany({
+        where: {
+          schedule_id: { in: scheduleIds },
+          deleted_at: null,
+          scheduled_datetime: { gte: start, lte: end },
+        },
+        select: { schedule_id: true, status: true },
+      });
+      const logBySchedule = new Map<number, string>();
+      for (const l of logs) {
+        // si hay varios logs mismo schedule hoy (no debería), conserva el último status
+        logBySchedule.set(l.schedule_id, l.status as string);
+      }
+
+      // Construir frases por toma: "Metformina a las 08:00 en compartimento 1, pendiente"
+      const parts: string[] = [];
+      for (const { s, hhmm } of sorted) {
+        const med = s.treatment_details.medications?.name || 'medicamento';
+        const comp = s.treatment_details.compartment_number;
+        const compTxt = comp != null ? ` en compartimento ${comp}` : '';
+        const statusRaw = logBySchedule.get(s.id);
+        let statusTxt = '';
+        if (statusRaw) {
+          if (statusRaw === 'Confirmado') statusTxt = ', ya tomada';
+          else if (statusRaw === 'Pendiente') statusTxt = ', pendiente';
+          else if (statusRaw === 'Retraso') statusTxt = ', tomada con retraso';
+          else if (statusRaw === 'Omitida') statusTxt = ', omitida';
+          else statusTxt = `, ${statusRaw.toLowerCase()}`;
+        }
+        parts.push(`${med} a las ${hhmm}${compTxt}${statusTxt}`);
+      }
+
+      // Limitar verbosidad: si >5, resumir
+      let speech: string;
+      if (parts.length <= 5) {
+        speech = `Hoy tienes ${parts.length} ${parts.length === 1 ? 'toma' : 'tomas'}: ${parts.join('; ')}.`;
+      } else {
+        const first = parts.slice(0, 4).join('; ');
+        const rest = parts.length - 4;
+        speech = `Hoy tienes ${parts.length} tomas. Las próximas 4 son: ${first}; y ${rest} más. Revisa la app para el listado completo.`;
+      }
+
+      return this.speak(speech);
+    } catch (e: any) {
+      console.error('[Alexa] handleListToday error', e?.message || e);
+      return this.speak(
+        'Tuve un problema al consultar tus tomas de hoy. Intenta de nuevo en un momento.',
+      );
+    }
   }
 
   /** ConsultarTomasIntent — próxima toma real del paciente */
