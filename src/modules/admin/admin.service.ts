@@ -847,6 +847,26 @@ export class AdminService {
         return { stats: { patients: totalPatients, doctors: totalDoctors, devices: totalDevices, adherence: `${globalAdherence}%`, incidents: activeIncidents }, monthlyData, topDoctors, summary: { activePatients: totalPatients, connectedDevices, sosAttended: '98%', otaUpdates: 203, uptime: '99.8%' } };
     }
 
+    async resolveIncident(idRef: string) {
+    const parts = idRef.split('-');
+    const prefix = parts.length > 1 ? parts[0] : 'SOS';
+    const id = parseInt(parts.length > 1 ? parts[1] : parts[0]);
+
+    if (prefix === 'SOS') {
+        await this.prisma.sos_events.update({
+            where: { id },
+            data: { status: 'Atendido' as any }
+        });
+    } else if (prefix === 'OMI') {
+        await this.prisma.medication_logs.update({
+            where: { id },
+            data: { status: 'Confirmado' as any }
+        });
+    }
+
+    return { message: 'Incidencia resuelta exitosamente' };
+}
+
     // ==========================================
     // ENDPOINT: GENERACIÓN DE PDF GLOBAL ADMIN
     // ==========================================

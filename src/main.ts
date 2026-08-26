@@ -25,9 +25,17 @@ async function bootstrap() {
   );
 
   app.enableCors({
-    origin: '*',
+    origin: [
+      'https://vitalguard.app',
+      'https://id.vitalguard.app',
+      'https://api.vitalguard.app',
+      'https://id.api.vitalguard.app',
+      'http://localhost:5173',
+      'http://localhost:5174',
+    ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type, Accept, Authorization, X-Timezone',
+    credentials: true,
+    allowedHeaders: 'Content-Type, Accept, Authorization',
   });
 
   // Configuración de microservicio MQTT con tiempo de espera bajo

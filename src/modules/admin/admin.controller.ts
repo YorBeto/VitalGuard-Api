@@ -74,6 +74,13 @@ export class AdminController {
 
     @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles('ADMIN')
+    @Put('incidents/:idRef/resolve')
+    async resolveIncident(@Param('idRef') idRef: string) {
+        return await this.adminService.resolveIncident(idRef);
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
     @Get('firmware/dashboard')
     async getFirmwareDashboard() {
         return await this.adminService.getFirmwareDashboard();
@@ -101,7 +108,7 @@ export class AdminController {
         res.set({
             'Content-Type': 'application/pdf',
             'Content-Disposition': 'attachment; filename="VitalGuard_Reporte_Operaciones.pdf"',
-            'Content-Length': buffer.length,
+            'Content-Length': buffer.length.toString(),
         });
         res.end(buffer);
     }
