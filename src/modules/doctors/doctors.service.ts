@@ -82,6 +82,8 @@ export class DoctorsService {
   // ==========================================
   async getDashboardData(vitalId: string) {
     const doctor = await this.getDoctorProfile(vitalId);
+    const vitalIdData = await this.getVitalIdUser(vitalId);
+    const doctorEmail = (vitalIdData.email || '').toLowerCase().trim();
 
     const activePatientsCount = await this.prisma.doctor_patient.count({
       where: { doctor_id: doctor.id, deleted_at: null },
@@ -113,12 +115,24 @@ export class DoctorsService {
       };
     });
 
-    const pendingRequestsCount = await this.prisma.patient_invitations.count({
-      where: {
-        status: { in: ['PENDIENTE', 'PENDING', 'Pendiente'] as any },
-        deleted_at: null
-      }
-    });
+    // Conteo seguro usando el valor exacto del enum PENDIENTE
+    let pendingRequestsCount = 0;
+    try {
+      pendingRequestsCount = await this.prisma.patient_invitations.count({
+        where: {
+          status: 'PENDIENTE',
+          invitee_role: 'DOCTOR',
+          deleted_at: null,
+          OR: [
+            { invitee_email: doctorEmail },
+            { invitee_vital_id: vitalId },
+            { invitee_email: null }
+          ]
+        }
+      });
+    } catch {
+      pendingRequestsCount = 0;
+    }
 
     const patientIds = recentRelations.map(r => r.patient_id);
     const activeSosCount = await this.prisma.sos_events.count({
@@ -126,7 +140,7 @@ export class DoctorsService {
         patient_id: { in: patientIds },
         status: 'Activo'
       }
-    });
+    }).catch(() => 0);
 
     return {
       profile: {
@@ -149,57 +163,62 @@ export class DoctorsService {
   // ==========================================
   async getPendingRequests(vitalId: string) {
     await this.getDoctorProfile(vitalId);
+    const vitalIdData = await this.getVitalIdUser(vitalId);
+    const doctorEmail = (vitalIdData.email || '').toLowerCase().trim();
 
+    // Consulta directa usando los nombres del schema.prisma
     const pendingInvitations = await this.prisma.patient_invitations.findMany({
       where: {
-        status: { in: ['PENDIENTE', 'PENDING', 'Pendiente'] as any },
+        status: 'PENDIENTE',
+        invitee_role: 'DOCTOR',
         deleted_at: null,
+        OR: [
+          { invitee_email: doctorEmail },
+          { invitee_vital_id: vitalId },
+          { invitee_email: null }
+        ]
+      },
+      include: {
+        patients: true,
       },
       orderBy: { created_at: 'desc' },
     });
 
-    const requestsWithPatients = await Promise.all(
-      pendingInvitations.map(async (inv) => {
-        let p: any = null;
-        if (inv.patient_id) {
-          p = await this.prisma.patients.findUnique({
-            where: { id: inv.patient_id }
-          });
-        }
+    return pendingInvitations.map((inv) => {
+      const p = inv.patients;
+      const fullName = p ? `${p.first_name} ${p.paternal_last_name} ${p.maternal_last_name || ''}`.trim() : 'Paciente Solicitante';
+      const initials = p && p.first_name && p.paternal_last_name
+        ? `${p.first_name[0]}${p.paternal_last_name[0]}`.toUpperCase()
+        : 'PA';
 
-        const fullName = p ? `${p.first_name} ${p.paternal_last_name}`.trim() : 'Paciente Nuevo';
-        const initials = p && p.first_name && p.paternal_last_name
-          ? `${p.first_name[0]}${p.paternal_last_name[0]}`.toUpperCase()
-          : 'PA';
+      let age: number | string = '--';
+      if (p && p.birth_date) {
+        age = new Date().getFullYear() - new Date(p.birth_date).getFullYear();
+      }
 
-        let age: number | string = '--';
-        if (p && p.birth_date) {
-          age = new Date().getFullYear() - new Date(p.birth_date as any).getFullYear();
-        }
-
-        return {
-          id: inv.id,
-          initials,
-          name: fullName,
-          age,
-          diagnosis: (inv as any).diagnosis || "Revisión Inicial",
-          city: (inv as any).city || "Torreón, Coahuila",
-          message: (inv as any).message || "El paciente ha solicitado que seas su médico tratante en VitalGuard.",
-          time: inv.created_at ? new Intl.DateTimeFormat('es-MX').format(inv.created_at) : 'Reciente'
-        };
-      })
-    );
-
-    return requestsWithPatients;
+      return {
+        id: inv.id,
+        initials,
+        name: fullName,
+        age,
+        diagnosis: p?.medical_notes || "Solicitud de Cuidado",
+        city: p?.address || "Torreón, Coahuila",
+        message: "El paciente ha solicitado que seas su médico tratante en VitalGuard.",
+        time: inv.created_at ? new Intl.DateTimeFormat('es-MX').format(inv.created_at) : 'Reciente'
+      };
+    });
   }
 
+  // ==========================================
+  // ACEPTAR SOLICITUD
+  // ==========================================
   async acceptRequest(vitalId: string, requestId: number) {
     const doctor = await this.getDoctorProfile(vitalId);
 
     const invitation = await this.prisma.patient_invitations.findFirst({
       where: {
-        id: requestId,
-        status: { in: ['PENDIENTE', 'PENDING', 'Pendiente'] as any },
+        id: Number(requestId),
+        status: 'PENDIENTE',
         deleted_at: null
       },
     });
@@ -222,9 +241,10 @@ export class DoctorsService {
     }
 
     await this.prisma.patient_invitations.update({
-      where: { id: requestId },
+      where: { id: Number(requestId) },
       data: {
-        status: 'ACEPTADA' as any,
+        status: 'ACEPTADA',
+        responded_at: new Date(),
         deleted_at: new Date()
       },
     });
@@ -232,19 +252,23 @@ export class DoctorsService {
     return { message: '¡Solicitud aceptada y paciente vinculado exitosamente!' };
   }
 
+  // ==========================================
+  // RECHAZAR SOLICITUD
+  // ==========================================
   async rejectRequest(vitalId: string, requestId: number) {
     await this.getDoctorProfile(vitalId);
 
     const invitation = await this.prisma.patient_invitations.findFirst({
-      where: { id: requestId, deleted_at: null }
+      where: { id: Number(requestId), deleted_at: null }
     });
 
     if (!invitation) throw new NotFoundException('Solicitud no encontrada');
 
     await this.prisma.patient_invitations.update({
-      where: { id: requestId },
+      where: { id: Number(requestId) },
       data: {
-        status: 'RECHAZADA' as any,
+        status: 'RECHAZADA',
+        responded_at: new Date(),
         deleted_at: new Date()
       }
     });
@@ -637,7 +661,7 @@ export class DoctorsService {
         city: 'Torreón, Coahuila',
         status: 'Activo',
         birthDate: patient.birth_date ? new Date(patient.birth_date).toLocaleDateString('es-MX') : 'N/A',
-        phone: patient.phone || (patient as any).telephone || 'Sin teléfono',
+        phone: patient.phone || 'Sin teléfono',
       },
       device: {
         id: device?.unique_code || 'VG-000000',
@@ -652,9 +676,9 @@ export class DoctorsService {
         incidents: omitted,
       },
       emergencyContact: {
-        name: (patient as any).emergency_contact_name || 'Sin contacto',
-        relation: (patient as any).emergency_contact_relation || 'Familiar',
-        phone: (patient as any).emergency_contact_phone || 'N/A',
+        name: 'Sin contacto',
+        relation: 'Familiar',
+        phone: 'N/A',
       },
       medications,
       alerts: [],
