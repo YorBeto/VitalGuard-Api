@@ -21,17 +21,6 @@ interface AlexaRequestBody {
   };
 }
 
-/**
- * Backend de la skill de Alexa (POST /alexa).
- *
- * Identifica al usuario por su accessToken (vía Vital ID), resuelve su
- * paciente (B5/B6/B7) y responde en formato ASK. Nunca lanza errores HTTP 500:
- * Alexa exige una respuesta 200 con un mensaje empático en cualquier caso.
- *
- * Caso B9: los intents de texto libre (configurable vía ALEXA_INTENT_NAME),
- * el AMAZON.FallbackIntent y cualquier intent desconocido delegan en el
- * AiOrchestratorService (Gemini) para responder con contexto real.
- */
 @Injectable()
 export class AlexaService {
   constructor(
@@ -51,38 +40,29 @@ export class AlexaService {
       `[Alexa] POST /alexa | skill=${appId} | requestType=${request?.type} | intent=${request?.intent?.name}`,
     );
 
-    // B3/B4: sin token → pedir vinculación
     if (!accessToken) {
-      console.log('[Alexa] B3/B4 -> Sin accessToken. Pidiendo vinculación.');
+      console.log('[Alexa] Sin accessToken. Pidiendo vinculación.');
       return this.speak(
         'Para usar VitalGuard necesito que conectes tu cuenta. Abre la aplicación móvil y toca "Conectar Alexa".',
       );
     }
 
-    console.log(
-      `[Alexa] accessToken presente (${accessToken.length} chars): ${accessToken.slice(0, 12)}...`,
-    );
-
-    // Validar token contra Vital ID
     let vitalId: string;
     try {
       vitalId = await this.identityService.resolveVitalId(accessToken);
       console.log(`[Alexa] Identidad resuelta: vitalId=${vitalId}`);
     } catch (err) {
-      console.warn('[Alexa] B8 -> Error resolviendo identidad:', (err as any)?.message || err);
-      // B8: token inválido/revocado
+      console.warn('[Alexa] Error resolviendo identidad:', (err as any)?.message || err);
       return this.speak(
         'Tu sesión expiró. Vuelve a conectar tu cuenta en la aplicación móvil.',
       );
     }
 
-    // Resolver paciente
     const resolution = await this.resolver.resolve(vitalId);
     console.log(
       `[Alexa] Resolución paciente: ok=${resolution.ok} | patientId=${resolution.patient?.id} | message=${resolution.message}`,
     );
     if (!resolution.ok || !resolution.patient) {
-      // B5 o B7
       return this.speak(
         resolution.message ??
           'No fue posible identificar tu paciente. Completa la configuración en la aplicación móvil.',
@@ -91,13 +71,10 @@ export class AlexaService {
 
     const patient = resolution.patient;
 
-    // Enrutado por tipo de request / intent
     switch (request?.type) {
       case 'LaunchRequest':
-        console.log('[Alexa] LaunchRequest -> bienvenida');
         return this.handleLaunch();
       case 'IntentRequest':
-        console.log(`[Alexa] IntentRequest -> intent="${request.intent?.name}"`);
         return this.handleIntent(
           request.intent?.name,
           request.intent?.slots,
@@ -105,10 +82,8 @@ export class AlexaService {
           vitalId,
         );
       case 'SessionEndedRequest':
-        console.log('[Alexa] SessionEndedRequest -> despedida');
         return this.speak('Hasta pronto. Cuidate mucho.');
       default:
-        console.log(`[Alexa] requestType desconocido="${request?.type}" -> bienvenida`);
         return this.handleLaunch();
     }
   }
@@ -121,17 +96,13 @@ export class AlexaService {
   ) {
     switch (intentName) {
       case 'ConsultarTomasIntent':
-        console.log('[Alexa] ConsultarTomasIntent -> consulta de próxima toma');
         return this.handleCheckSchedule(patientId!);
       case 'TomarMedicinaIntent':
       case 'ConfirmarTomaIntent':
-        console.log(`[Alexa] ${intentName} -> marcar toma como tomada`);
         return this.handleMarkTaken(patientId!);
       case 'ListarTomasHoyIntent':
-        console.log('[Alexa] ListarTomasHoyIntent -> lista tomas del día');
         return this.handleListToday(patientId!);
       case 'SosIntent':
-        console.log('[Alexa] SosIntent -> disparar SOS');
         return this.handleSos(patientId!);
       case 'AMAZON.HelpIntent':
         return this.speak(
@@ -141,9 +112,7 @@ export class AlexaService {
       case 'AMAZON.CancelIntent':
         return this.speak('Hasta pronto. Cuidate mucho.');
       default:
-        // B9: FallbackIntent, intent libre configurable o intent desconocido → IA real
         const freeText = this.extractFreeText(slots);
-        console.log(`[Alexa] Intent desconocido/no-manejado "${intentName}" -> IA libre. Texto="${freeText}"`);
         return this.handleFreeForm(intentName, patientId!, vitalId!, freeText);
     }
   }
@@ -154,10 +123,6 @@ export class AlexaService {
     );
   }
 
-  /**
-   * Extrae el texto libre de un intent desde el slot configurable
-   * (ALEXA_TEXT_SLOT_NAME, default "texto"). Devuelve string (vacío si no hay).
-   */
   private extractFreeText(slots?: Record<string, any>): string {
     const slotName = process.env.ALEXA_TEXT_SLOT_NAME || 'texto';
     const slot = slots?.[slotName];
@@ -167,11 +132,6 @@ export class AlexaService {
     return typeof value === 'string' ? value.trim() : '';
   }
 
-  /**
-   * B9: delega en el AiOrchestratorService para responder con IA a frases
-   * libres. Siempre fail-safe: si falta texto o el orquestador falla, responde
-   * con un mensaje empático (nunca 500).
-   */
   private async handleFreeForm(
     intentName: string | undefined,
     patientId: number,
@@ -179,20 +139,17 @@ export class AlexaService {
     text: string,
   ) {
     const configuredIntent = process.env.ALEXA_INTENT_NAME;
-
-    // Solo procesa el intent libre configurado o el FallbackIntent/desconocido
     const isConfigured = Boolean(configuredIntent && intentName === configuredIntent);
     const isSystemFallback =
       intentName === 'AMAZON.FallbackIntent' || intentName === undefined;
 
     if (!isConfigured && !isSystemFallback) {
-      // intent propio conocido pero no de texto libre → mensaje genérico
       return this.speak(
         'No estoy seguro de eso. Puedes preguntarme cuándo tomar tu medicina o pedir ayuda de emergencia.',
       );
     }
 
-    const textToUse = text || this.genericPromptForIntent(intentName);
+    const textToUse = text || '';
     if (!textToUse) {
       return this.speak(
         'No estoy seguro de eso. Puedes preguntarme cuándo tomar tu medicina o pedir ayuda de emergencia.',
@@ -207,7 +164,6 @@ export class AlexaService {
       });
       return this.speak(result.reply);
     } catch (error: any) {
-      // Fail-safe: nunca romper la skill por un fallo de IA
       console.error('❌ Error en AI orquestador desde Alexa:', error?.message || error);
       return this.speak(
         'No estoy seguro de eso. Puedes preguntarme cuándo tomar tu medicina o pedir ayuda de emergencia.',
@@ -215,21 +171,15 @@ export class AlexaService {
     }
   }
 
-  /** Prompt por defecto si el intent libre no trajo texto (p. ej. FallbackIntent sin slot). */
-  private genericPromptForIntent(intentName: string | undefined): string {
-    void intentName;
-    return '';
-  }
-
-  /** ListarTomasHoyIntent — lista todas las tomas del día (read-only, no toca MQTT) */
+  /** Listar todas las tomas del día para tratamientos activos */
   private async handleListToday(patientId: number) {
     try {
-      // Reuse same source as SchedulesService.findToday — read-only
       const schedules = await this.prisma.schedules.findMany({
         where: {
           treatment_details: {
-            treatments: { patient_id: patientId, deleted_at: null },
+            treatments: { patient_id: patientId, deleted_at: null, status: 'Activo' },
             deleted_at: null,
+            status: 'En_curso',
           },
           deleted_at: null,
         },
@@ -242,11 +192,10 @@ export class AlexaService {
 
       if (schedules.length === 0) {
         return this.speak(
-          'No tienes tomas programadas para hoy. Consulta tu aplicación para más detalles.',
+          'No tienes tomas programadas para hoy en tus tratamientos activos. Consulta tu aplicación para más detalles.',
         );
       }
 
-      // Ordenar por hora del día
       const sorted = schedules
         .map((s) => {
           const t = new Date(s.time_of_day);
@@ -257,7 +206,6 @@ export class AlexaService {
         })
         .sort((a, b) => a.minutes - b.minutes);
 
-      // Buscar logs de hoy para enriquecer con estado (Pendiente/Confirmado/Retraso/Omitida)
       const nowTz = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
       const start = new Date(nowTz);
       start.setHours(0, 0, 0, 0);
@@ -273,13 +221,12 @@ export class AlexaService {
         },
         select: { schedule_id: true, status: true },
       });
+
       const logBySchedule = new Map<number, string>();
       for (const l of logs) {
-        // si hay varios logs mismo schedule hoy (no debería), conserva el último status
         logBySchedule.set(l.schedule_id, l.status as string);
       }
 
-      // Construir frases por toma: "Metformina a las 08:00 en compartimento 1, pendiente"
       const parts: string[] = [];
       for (const { s, hhmm } of sorted) {
         const med = s.treatment_details.medications?.name || 'medicamento';
@@ -297,7 +244,6 @@ export class AlexaService {
         parts.push(`${med} a las ${hhmm}${compTxt}${statusTxt}`);
       }
 
-      // Limitar verbosidad: si >5, resumir
       let speech: string;
       if (parts.length <= 5) {
         speech = `Hoy tienes ${parts.length} ${parts.length === 1 ? 'toma' : 'tomas'}: ${parts.join('; ')}.`;
@@ -316,13 +262,14 @@ export class AlexaService {
     }
   }
 
-  /** ConsultarTomasIntent — próxima toma real del paciente */
+  /** Consultar próxima toma programada */
   private async handleCheckSchedule(patientId: number) {
     const schedules = await this.prisma.schedules.findMany({
       where: {
         treatment_details: {
-          treatments: { patient_id: patientId, deleted_at: null },
+          treatments: { patient_id: patientId, deleted_at: null, status: 'Activo' },
           deleted_at: null,
+          status: 'En_curso',
         },
         deleted_at: null,
       },
@@ -335,13 +282,12 @@ export class AlexaService {
 
     if (schedules.length === 0) {
       return this.speak(
-        'No tienes medicamentos programados en este momento. Consulta tu aplicación para más detalles.',
+        'No tienes medicamentos programados en tratamientos activos. Consulta tu aplicación para más detalles.',
       );
     }
 
-    // Próxima toma: menor hora del día no pasada
-    const now = new Date();
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const nowTz = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+    const nowMinutes = nowTz.getHours() * 60 + nowTz.getMinutes();
 
     let next = schedules
       .map((s) => {
@@ -352,7 +298,7 @@ export class AlexaService {
       .filter((x) => x.minutes >= nowMinutes)
       .sort((a, b) => a.minutes - b.minutes)[0];
 
-    // Si no queda toma hoy, tomar la primera de mañana
+    let isTomorrow = false;
     if (!next) {
       next = schedules
         .map((s) => {
@@ -360,6 +306,7 @@ export class AlexaService {
           return { s, minutes: t.getHours() * 60 + t.getMinutes() };
         })
         .sort((a, b) => a.minutes - b.minutes)[0];
+      isTomorrow = true;
     }
 
     const detail = next.s.treatment_details;
@@ -367,37 +314,89 @@ export class AlexaService {
     const dose = detail.dose_info ? `, dosis ${detail.dose_info}` : '';
     const hours = String(Math.floor(next.minutes / 60)).padStart(2, '0');
     const mins = String(next.minutes % 60).padStart(2, '0');
+    const dayText = isTomorrow ? 'mañana' : 'hoy';
 
     return this.speak(
-      `Tu próxima toma es ${med}${dose} a las ${hours}:${mins}. Recuerda tomarla a tiempo.`,
+      `Tu próxima toma es ${med}${dose} ${dayText} a las ${hours}:${mins}. Recuerda tomarla a tiempo.`,
     );
   }
 
-  /** TomarMedicinaIntent — confirma la toma pendiente más reciente (voice_confirmed) */
+  /** Confirmar tomas con validación horaria inteligente (uno o varios medicamentos a la vez) */
   private async handleMarkTaken(patientId: number) {
-    // Buscar el log pendiente más próximo del paciente
-    const pending = await this.prisma.medication_logs.findFirst({
+    const now = new Date();
+    const nowTz = new Date(now.toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+
+    // Ventana permitida: desde 45 minutos antes hasta 120 minutos después
+    const windowStart = new Date(nowTz.getTime() - 120 * 60 * 1000);
+    const windowEnd = new Date(nowTz.getTime() + 45 * 60 * 1000);
+
+    // 1. Buscar todas las tomas pendientes que caen dentro de la ventana horaria actual
+    const validPendingLogs = await this.prisma.medication_logs.findMany({
       where: {
         deleted_at: null,
         status: 'Pendiente',
+        scheduled_datetime: { gte: windowStart, lte: windowEnd },
         schedules: {
           treatment_details: {
-            treatments: { patient_id: patientId, deleted_at: null },
+            treatments: { patient_id: patientId, deleted_at: null, status: 'Activo' },
           },
         },
       },
-      orderBy: { scheduled_datetime: 'asc' },
-      include: { schedules: { include: { treatment_details: { include: { medications: true } } } } },
+      include: {
+        schedules: {
+          include: {
+            treatment_details: { include: { medications: true } },
+          },
+        },
+      },
     });
 
-    if (!pending) {
+    // 2. Si no hay dosis en esta ventana, buscar si hay una más tarde hoy para avisar la hora
+    if (validPendingLogs.length === 0) {
+      const todayEnd = new Date(nowTz);
+      todayEnd.setHours(23, 59, 59, 999);
+
+      const futurePending = await this.prisma.medication_logs.findFirst({
+        where: {
+          deleted_at: null,
+          status: 'Pendiente',
+          scheduled_datetime: { gt: windowEnd, lte: todayEnd },
+          schedules: {
+            treatment_details: {
+              treatments: { patient_id: patientId, deleted_at: null, status: 'Activo' },
+            },
+          },
+        },
+        orderBy: { scheduled_datetime: 'asc' },
+        include: {
+          schedules: {
+            include: {
+              treatment_details: { include: { medications: true } },
+            },
+          },
+        },
+      });
+
+      if (futurePending) {
+        const schedTime = new Date(futurePending.scheduled_datetime);
+        const hh = String(schedTime.getHours()).padStart(2, '0');
+        const mm = String(schedTime.getMinutes()).padStart(2, '0');
+        const medName = futurePending.schedules.treatment_details.medications?.name || 'tu medicamento';
+        
+        return this.speak(
+          `Aún no es hora de tu dosis. Tu próxima toma de ${medName} está programada para las ${hh}:${mm}.`,
+        );
+      }
+
       return this.speak(
-        'No tengo ninguna toma pendiente por confirmar en este momento.',
+        'No tienes ninguna dosis pendiente por tomar en este momento. Revisa la aplicación para consultar tu plan.',
       );
     }
 
-    await this.prisma.medication_logs.update({
-      where: { id: pending.id },
+    // 3. Confirmar todas las tomas de la ventana válida (ej. 10:00 y 10:20 juntas)
+    const logIds = validPendingLogs.map((l) => l.id);
+    await this.prisma.medication_logs.updateMany({
+      where: { id: { in: logIds } },
       data: {
         status: 'Confirmado',
         actual_taken_datetime: new Date(),
@@ -405,11 +404,23 @@ export class AlexaService {
       },
     });
 
-    const med = pending.schedules.treatment_details.medications?.name || 'tu medicamento';
-    return this.speak(`Listo, he registrado que ya tomaste ${med}. ¡Muy bien!`);
+    const medNames = Array.from(
+      new Set(
+        validPendingLogs.map(
+          (l) => l.schedules?.treatment_details?.medications?.name || 'tu medicamento',
+        ),
+      ),
+    );
+
+    const formattedNames =
+      medNames.length === 1
+        ? medNames[0]
+        : medNames.slice(0, -1).join(', ') + ' y ' + medNames[medNames.length - 1];
+
+    return this.speak(`Listo, he registrado la toma de ${formattedNames}. ¡Muy bien!`);
   }
 
-  /** SosIntent — dispara un evento SOS real con notificaciones FCM+WS */
+  /** Disparar evento SOS */
   private async handleSos(patientId: number) {
     await this.sosEventsService.create(patientId);
 
@@ -418,7 +429,6 @@ export class AlexaService {
     );
   }
 
-  /** Construye una respuesta ASK válida (siempre 200) */
   private speak(text: string) {
     return {
       version: '1.0',
