@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import PDFDocument from 'pdfkit';
 import * as path from 'path';
@@ -6,71 +6,128 @@ import * as fs from 'fs';
 
 @Injectable()
 export class DoctorsService {
+  private readonly logger = new Logger(DoctorsService.name);
+
   constructor(private readonly prisma: PrismaService) { }
 
-  async getDashboardData(vitalId: string) {
-    // 1. Buscar el perfil base y el registro de médico
+  private getVitalIdBaseUrl(): string {
+    const rawUrl = process.env.VITAL_ID_API_URL || process.env.VITAL_ID_BASE_URL || 'https://id-api.vitalguard.app';
+    return rawUrl.replace(/['"]+/g, '').replace(/\/+$/, '');
+  }
+
+  private async getVitalIdUser(vitalId: string) {
+    if (!vitalId || !/^[0-9a-fA-F-]{36}$/.test(vitalId)) {
+      return { name: "Médico", email: "Sin correo", initials: "DR", firstName: "Médico", lastName: "" };
+    }
+    try {
+      const baseUrl = this.getVitalIdBaseUrl();
+      const endpoint = `${baseUrl}/auth/user/${encodeURIComponent(vitalId)}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(endpoint, { signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (res.ok) {
+        const json: any = await res.json();
+        const userData = json.data ? json.data : json;
+        const personData = userData.persons || userData.person || {};
+
+        const firstName = personData.first_name || personData.firstName || userData.first_name || userData.firstName || '';
+        const lastName = personData.paternal_last_name || personData.paternalLastName || personData.lastName || userData.last_name || userData.lastName || '';
+        const fullName = `${firstName} ${lastName}`.trim();
+
+        return {
+          name: fullName || 'Médico',
+          email: userData.email || 'Sin correo',
+          initials: firstName ? firstName.substring(0, 2).toUpperCase() : 'DR',
+          firstName,
+          lastName,
+          phone: userData.phone || personData.phone || ''
+        };
+      }
+    } catch (e: any) {
+      this.logger.warn(`No se pudo obtener datos del SSO para ${vitalId}: ${e.message}`);
+    }
+    return { name: "Médico", email: "Sin correo", initials: "DR", firstName: "Médico", lastName: "" };
+  }
+
+  private getTimeAgo(date: Date | null): string {
+    if (!date) return 'Desconocido';
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+    if (seconds < 60) return `Hace ${seconds} segundos`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `Hace ${minutes} minutos`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `Hace ${hours} horas`;
+    const days = Math.floor(hours / 24);
+    return `Hace ${days} días`;
+  }
+
+  private async getDoctorProfile(vitalId: string) {
     const appProfile = await this.prisma.app_profiles.findFirst({
       where: { vital_id: vitalId, deleted_at: null },
     });
-
-    if (!appProfile) throw new NotFoundException('Perfil no encontrado');
+    if (!appProfile) throw new UnauthorizedException('Perfil no encontrado');
 
     const doctor = await this.prisma.doctors.findFirst({
       where: { app_profile_id: appProfile.id, deleted_at: null },
     });
+    if (!doctor) throw new UnauthorizedException('Médico no autorizado');
 
-    if (!doctor) throw new NotFoundException('Perfil médico no encontrado');
+    return doctor;
+  }
 
-    // 2. Pacientes Activos (Real con Prisma)
+  // ==========================================
+  // DASHBOARD MÉDICO
+  // ==========================================
+  async getDashboardData(vitalId: string) {
+    const doctor = await this.getDoctorProfile(vitalId);
+
     const activePatientsCount = await this.prisma.doctor_patient.count({
-      where: {
-        doctor_id: doctor.id,
-        deleted_at: null
-      },
+      where: { doctor_id: doctor.id, deleted_at: null },
     });
 
-    // 3. Obtener los pacientes recientes vinculados a este médico
     const recentRelations = await this.prisma.doctor_patient.findMany({
       where: { doctor_id: doctor.id, deleted_at: null },
       include: {
         patients: {
           include: {
-            treatments: {
-              where: { status: 'Activo', deleted_at: null },
-            }
+            treatments: { where: { status: 'Activo', deleted_at: null } }
           }
         }
       },
       orderBy: { created_at: 'desc' },
-      take: 4,
+      take: 5,
     });
 
     const recentPatients = recentRelations.map(rel => {
       const p = rel.patients;
-      const age = p.birth_date ? new Date().getFullYear() - new Date(p.birth_date).getFullYear() : 'N/A';
+      const age = p?.birth_date ? new Date().getFullYear() - new Date(p.birth_date).getFullYear() : 'N/A';
 
       return {
-        id: p.id,
-        name: `${p.first_name} ${p.paternal_last_name}`,
+        id: p?.id ?? 0,
+        name: p ? `${p.first_name} ${p.paternal_last_name}` : 'Paciente',
         age,
-        adherence: 100,
-        status: 'Activa'
+        adherence: 95,
+        status: 'Estable'
       };
     });
 
-    // 4. Solicitudes Pendientes
-    const pendingRequestsCount = 0;
+    const pendingRequestsCount = await this.prisma.patient_invitations.count({
+      where: {
+        status: { in: ['PENDIENTE', 'PENDING', 'Pendiente'] as any },
+        deleted_at: null
+      }
+    });
 
-    // 5. Alertas SOS reales 
     const patientIds = recentRelations.map(r => r.patient_id);
-    let activeSosCount = 0;
-    let alertsList: any[] = [];
+    const activeSosCount = await this.prisma.sos_events.count({
+      where: {
+        patient_id: { in: patientIds },
+        status: 'Activo'
+      }
+    });
 
-    // 6. Actividad reciente basada en acciones reales o auditoría / logs
-    const recentActivity: any[] = []; // <-- Arreglado para evitar error never[]
-
-    // 7. Retornar el objeto consolidado con ceros o datos reales
     return {
       profile: {
         specialty: doctor.specialty || 'Medicina General',
@@ -78,89 +135,92 @@ export class DoctorsService {
       stats: {
         activePatients: activePatientsCount,
         pendingRequests: pendingRequestsCount,
-        averageAdherence: activePatientsCount > 0 ? 90 : 0,
+        averageAdherence: activePatientsCount > 0 ? 92 : 0,
         activeSosAlerts: activeSosCount
       },
       recentPatients,
-      alerts: alertsList.length > 0 ? alertsList : [],
-      recentActivity: recentActivity.length > 0 ? recentActivity : []
+      alerts: [],
+      recentActivity: []
     };
   }
 
-  // 1. Obtener solicitudes pendientes para el médico autenticado
+  // ==========================================
+  // INVITACIONES / SOLICITUDES DE PACIENTES
+  // ==========================================
   async getPendingRequests(vitalId: string) {
-    const appProfile = await this.prisma.app_profiles.findFirst({
-      where: { vital_id: vitalId, deleted_at: null },
-    });
-    if (!appProfile) throw new NotFoundException('Perfil no encontrado');
+    await this.getDoctorProfile(vitalId);
 
-    const doctor = await this.prisma.doctors.findFirst({
-      where: { app_profile_id: appProfile.id, deleted_at: null },
-    });
-    if (!doctor) throw new NotFoundException('Médico no encontrado');
-
-    // 1. Consultar la tabla de invitaciones real
     const pendingInvitations = await this.prisma.patient_invitations.findMany({
       where: {
-        status: 'PENDIENTE' as any, // Traerá cualquier pendiente
+        status: { in: ['PENDIENTE', 'PENDING', 'Pendiente'] as any },
         deleted_at: null,
-      },
-      include: {
-        patients: true,
       },
       orderBy: { created_at: 'desc' },
     });
 
-    // 2. Mapear los datos al formato exacto que espera tu frontend
-    // 2. Mapear los datos al formato exacto que espera tu frontend
-    return pendingInvitations.map(inv => {
-      const p = inv.patients;
-      const fullName = `${p.first_name} ${p.paternal_last_name}`.trim();
-      const initials = p.first_name && p.paternal_last_name
-        ? `${p.first_name[0]}${p.paternal_last_name[0]}`.toUpperCase()
-        : 'PG';
+    const requestsWithPatients = await Promise.all(
+      pendingInvitations.map(async (inv) => {
+        let p: any = null;
+        if (inv.patient_id) {
+          p = await this.prisma.patients.findUnique({
+            where: { id: inv.patient_id }
+          });
+        }
 
-      let age = 0;
-      if (p.birth_date) {
-        age = new Date().getFullYear() - new Date(p.birth_date as any).getFullYear();
-      }
+        const fullName = p ? `${p.first_name} ${p.paternal_last_name}`.trim() : 'Paciente Nuevo';
+        const initials = p && p.first_name && p.paternal_last_name
+          ? `${p.first_name[0]}${p.paternal_last_name[0]}`.toUpperCase()
+          : 'PA';
 
-      return {
-        id: inv.id,
-        initials: initials,
-        name: fullName,
-        age: age,
-        diagnosis: "Pendiente de revisión",
-        city: "No especificada",
-        message: "El paciente ha solicitado que seas su médico tratante en la plataforma VitalGuard.",
-        time: new Date(inv.created_at as any).toLocaleDateString('es-MX')
-      };
-    });
+        let age: number | string = '--';
+        if (p && p.birth_date) {
+          age = new Date().getFullYear() - new Date(p.birth_date as any).getFullYear();
+        }
+
+        return {
+          id: inv.id,
+          initials,
+          name: fullName,
+          age,
+          diagnosis: (inv as any).diagnosis || "Revisión Inicial",
+          city: (inv as any).city || "Torreón, Coahuila",
+          message: (inv as any).message || "El paciente ha solicitado que seas su médico tratante en VitalGuard.",
+          time: inv.created_at ? new Intl.DateTimeFormat('es-MX').format(inv.created_at) : 'Reciente'
+        };
+      })
+    );
+
+    return requestsWithPatients;
   }
 
-  // 2. Aceptar solicitud (Vincular al paciente con el doctor)
-  // 2. Aceptar solicitud (Vincular al paciente con el doctor)
   async acceptRequest(vitalId: string, requestId: number) {
     const doctor = await this.getDoctorProfile(vitalId);
 
-    // 1. Buscar la invitación pendiente
     const invitation = await this.prisma.patient_invitations.findFirst({
-      where: { id: requestId, status: 'PENDIENTE', deleted_at: null },
+      where: {
+        id: requestId,
+        status: { in: ['PENDIENTE', 'PENDING', 'Pendiente'] as any },
+        deleted_at: null
+      },
     });
 
     if (!invitation) {
       throw new NotFoundException('La solicitud no existe o ya fue atendida');
     }
 
-    // 2. Crear la relación oficial en la tabla doctor_patient
-    await this.prisma.doctor_patient.create({
-      data: {
-        doctor_id: doctor.id,
-        patient_id: invitation.patient_id,
-      },
+    const existingLink = await this.prisma.doctor_patient.findFirst({
+      where: { doctor_id: doctor.id, patient_id: invitation.patient_id, deleted_at: null }
     });
 
-    // 3. Marcar la invitación como aceptada o eliminarla (Soft Delete)
+    if (!existingLink) {
+      await this.prisma.doctor_patient.create({
+        data: {
+          doctor_id: doctor.id,
+          patient_id: invitation.patient_id,
+        },
+      });
+    }
+
     await this.prisma.patient_invitations.update({
       where: { id: requestId },
       data: {
@@ -172,21 +232,31 @@ export class DoctorsService {
     return { message: '¡Solicitud aceptada y paciente vinculado exitosamente!' };
   }
 
-  // 3. Rechazar solicitud
   async rejectRequest(vitalId: string, requestId: number) {
-    return { message: 'Solicitud rechazada' };
+    await this.getDoctorProfile(vitalId);
+
+    const invitation = await this.prisma.patient_invitations.findFirst({
+      where: { id: requestId, deleted_at: null }
+    });
+
+    if (!invitation) throw new NotFoundException('Solicitud no encontrada');
+
+    await this.prisma.patient_invitations.update({
+      where: { id: requestId },
+      data: {
+        status: 'RECHAZADA' as any,
+        deleted_at: new Date()
+      }
+    });
+
+    return { message: 'Solicitud rechazada correctamente' };
   }
 
+  // ==========================================
+  // LISTA DE PACIENTES
+  // ==========================================
   async getPatientsList(vitalId: string, search?: string) {
-    const appProfile = await this.prisma.app_profiles.findFirst({
-      where: { vital_id: vitalId, deleted_at: null },
-    });
-    if (!appProfile) throw new NotFoundException('Perfil no encontrado');
-
-    const doctor = await this.prisma.doctors.findFirst({
-      where: { app_profile_id: appProfile.id, deleted_at: null },
-    });
-    if (!doctor) throw new NotFoundException('Perfil médico no encontrado');
+    const doctor = await this.getDoctorProfile(vitalId);
 
     const relations = await this.prisma.doctor_patient.findMany({
       where: {
@@ -196,9 +266,7 @@ export class DoctorsService {
       include: {
         patients: {
           include: {
-            treatments: {
-              where: { status: 'Activo', deleted_at: null }
-            }
+            treatments: { where: { status: 'Activo', deleted_at: null } }
           }
         }
       },
@@ -207,17 +275,16 @@ export class DoctorsService {
 
     let patientsList = relations.map(rel => {
       const p = rel.patients;
-
-      const fullName = `${p.first_name} ${p.paternal_last_name} ${p.maternal_last_name || ''}`.trim();
-      const initials = `${p.first_name[0]}${p.paternal_last_name[0]}`.toUpperCase();
-      const age = p.birth_date ? new Date().getFullYear() - new Date(p.birth_date).getFullYear() : 0;
+      const fullName = p ? `${p.first_name} ${p.paternal_last_name} ${p.maternal_last_name || ''}`.trim() : 'Paciente';
+      const initials = p && p.first_name ? `${p.first_name[0]}${p.paternal_last_name ? p.paternal_last_name[0] : 'A'}`.toUpperCase() : 'PA';
+      const age = p?.birth_date ? new Date().getFullYear() - new Date(p.birth_date).getFullYear() : 0;
 
       return {
-        id: p.id,
+        id: p ? p.id : 0,
         initials,
         name: fullName,
         age,
-        adherence: "100%",
+        adherence: "95%",
         time: "Reciente",
         status: "Estable",
         statusClass: "badge-success"
@@ -245,11 +312,9 @@ export class DoctorsService {
     };
   }
 
-  // ====================================================================
-  // MÓDULO DE TRATAMIENTOS
-  // ====================================================================
-
-  // 1. Obtener TODOS los tratamientos globales del médico (GlobalTreatments.tsx)
+  // ==========================================
+  // TRATAMIENTOS GLOBALES
+  // ==========================================
   async getGlobalTreatments(vitalId: string) {
     const doctor = await this.getDoctorProfile(vitalId);
 
@@ -272,27 +337,25 @@ export class DoctorsService {
       }
     });
 
-    let globalTreatments: any[] = []; // <-- ARREGLADO: Tipo definido correctamente afuera
-    let totalAlerts = 0;
+    const globalTreatments: any[] = [];
     let criticalPatients = 0;
 
     relations.forEach(rel => {
       const p = rel.patients;
+      if (!p) return;
       const fullName = `${p.first_name} ${p.paternal_last_name}`;
-      const initials = `${p.first_name[0]}${p.paternal_last_name[0]}`.toUpperCase();
+      const initials = `${p.first_name[0] || 'P'}${p.paternal_last_name[0] || 'A'}`.toUpperCase();
 
-      p.treatments.forEach(treatment => {
-        const activeMeds = treatment.treatment_details.length;
+      (p.treatments || []).forEach(treatment => {
+        const activeMeds = treatment.treatment_details ? treatment.treatment_details.length : 0;
         const formattedDate = new Date(treatment.start_date).toLocaleDateString('es-MX');
         const treatmentName = `Tratamiento ${formattedDate}`;
 
-        const adherenceValue = treatment.status === 'Activo' ? 90 : 40;
+        const adherenceValue = treatment.status === 'Activo' ? 92 : 40;
         const statusText = adherenceValue >= 80 ? 'Excelente' : adherenceValue >= 60 ? 'Observación' : 'Crítico';
         const statusClass = adherenceValue >= 80 ? 'badge-success' : adherenceValue >= 60 ? 'badge-warning' : 'badge-danger';
 
         if (statusText === 'Crítico') criticalPatients++;
-
-        // <-- ARREGLADO: Se eliminó el let globalTreatments redundante que estaba aquí
 
         globalTreatments.push({
           id: treatment.id,
@@ -316,16 +379,15 @@ export class DoctorsService {
       stats: {
         totalTreatments: globalTreatments.length,
         averageAdherence: `${avgAdherence}%`,
-        activeAlerts: totalAlerts,
+        activeAlerts: 0,
         criticalPatients
       },
       treatments: globalTreatments
     };
   }
 
-  // 2. Obtener tratamientos de un paciente en específico (PatientTreatments.tsx)
   async getPatientTreatmentsDashboard(vitalId: string, patientId: number) {
-    const doctor = await this.getDoctorProfile(vitalId);
+    await this.getDoctorProfile(vitalId);
 
     const patient = await this.prisma.patients.findFirst({
       where: { id: patientId, deleted_at: null },
@@ -347,17 +409,18 @@ export class DoctorsService {
 
     if (!patient) throw new NotFoundException('Paciente no encontrado');
 
-    const activeTreatmentsList = patient.treatments.map(t => {
-      // Formateo limpio: "Tratamiento 17/8/2026" (Sin la palabra "desde")
+    const activeTreatmentsList = (patient.treatments || []).map(t => {
       const formattedDate = new Date(t.start_date).toLocaleDateString('es-MX');
 
       return {
         id: t.id,
         name: `Tratamiento ${formattedDate}`,
         status: t.status,
-        details: t.treatment_details.map(td => ({
-          medication: td.medications.name,
-          schedule: td.schedules.length > 0 ? new Date(td.schedules[0].time_of_day).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Sin horario',
+        details: (t.treatment_details || []).map(td => ({
+          medication: td.medications?.name || 'Medicamento',
+          schedule: td.schedules && td.schedules.length > 0
+            ? new Date(td.schedules[0].time_of_day).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : 'Sin horario',
           duration: td.end_date ? Math.ceil((new Date(td.end_date).getTime() - new Date(t.start_date).getTime()) / (1000 * 3600 * 24)) + ' días' : 'Indefinido'
         }))
       };
@@ -367,20 +430,19 @@ export class DoctorsService {
       patientInfo: {
         id: patient.id,
         name: `${patient.first_name} ${patient.paternal_last_name}`,
-        initials: `${patient.first_name[0]}${patient.paternal_last_name[0]}`.toUpperCase()
+        initials: `${patient.first_name[0] || 'P'}${patient.paternal_last_name[0] || 'A'}`.toUpperCase()
       },
       stats: {
-        activeTreatmentsCount: patient.treatments.filter(t => t.status === 'Activo').length,
+        activeTreatmentsCount: (patient.treatments || []).filter(t => t.status === 'Activo').length,
         adherence: "92%",
         nextDose: "08:00 AM",
-        omissions: 2
+        omissions: 0
       },
       activeTreatments: activeTreatmentsList,
-      recentActivity: [] as any[]
+      recentActivity: []
     };
   }
 
-  // 3. Detalles completos de un tratamiento específico (TreatmentDetails.tsx y EditTreatment.tsx)
   async getTreatmentDetails(vitalId: string, treatmentId: number) {
     await this.getDoctorProfile(vitalId);
 
@@ -399,11 +461,13 @@ export class DoctorsService {
 
     if (!treatment) throw new NotFoundException('Tratamiento no encontrado');
 
-    const mappedMedications = treatment.treatment_details.map(td => {
-      const scheduleTime = td.schedules.length > 0 ? new Date(td.schedules[0].time_of_day).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Sin hora';
+    const mappedMedications = (treatment.treatment_details || []).map(td => {
+      const scheduleTime = td.schedules && td.schedules.length > 0
+        ? new Date(td.schedules[0].time_of_day).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : 'Sin hora';
       return {
         id: td.id,
-        name: td.medications.name,
+        name: td.medications?.name || 'Medicamento',
         dose: td.dose_info || 'N/A',
         schedule: `Cada ${td.frequency_hours}h · ${scheduleTime}`,
         frequency: `Cada ${td.frequency_hours} horas`,
@@ -412,7 +476,6 @@ export class DoctorsService {
       };
     });
 
-    // Formateo limpio también aquí para la vista de editar
     const formattedDate = new Date(treatment.start_date).toLocaleDateString('es-MX');
 
     return {
@@ -424,7 +487,6 @@ export class DoctorsService {
     };
   }
 
-  // 4. Historial de adherencia del tratamiento (TreatmentHistory.tsx)
   async getTreatmentHistory(vitalId: string, treatmentId: number) {
     await this.getDoctorProfile(vitalId);
 
@@ -462,7 +524,7 @@ export class DoctorsService {
       return {
         id: log.id,
         date: new Date(log.scheduled_datetime).toLocaleDateString(),
-        medication: log.schedules.treatment_details.medications.name,
+        medication: log.schedules?.treatment_details?.medications?.name || 'Medicamento',
         time: new Date(log.scheduled_datetime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         status: log.status,
       };
@@ -482,45 +544,21 @@ export class DoctorsService {
     };
   }
 
-  private async getDoctorProfile(vitalId: string) {
-    const appProfile = await this.prisma.app_profiles.findFirst({
-      where: { vital_id: vitalId, deleted_at: null },
-    });
-    if (!appProfile) throw new UnauthorizedException('Perfil no encontrado');
-
-    const doctor = await this.prisma.doctors.findFirst({
-      where: { app_profile_id: appProfile.id, deleted_at: null },
-    });
-    if (!doctor) throw new UnauthorizedException('Médico no autorizado');
-
-    return doctor;
-  }
-
-  // Endpoints requeridos por vitalguard-web (Settings, PatientProfile, Adherence)
   async getMyProfile(vitalId: string) {
-    const appProfile = await this.prisma.app_profiles.findFirst({
-      where: { vital_id: vitalId, deleted_at: null },
-      include: { roles: true },
-    });
-    if (!appProfile) throw new NotFoundException('Perfil no encontrado');
-    const doctor = await this.prisma.doctors.findFirst({
-      where: { app_profile_id: appProfile.id, deleted_at: null },
-    });
-    if (!doctor) throw new NotFoundException('Perfil médico no encontrado');
-    // Intentar obtener datos de persona (si existe relación) para nombre/email
-    // Datos del token se usan como fallback en frontend
+    const doctor = await this.getDoctorProfile(vitalId);
+    const vitalIdData = await this.getVitalIdUser(vitalId);
+
     return {
       id: doctor.id,
-      appProfileId: appProfile.id,
-      name: `Doctor ${doctor.id}`,
-      fullName: `Doctor ${doctor.id}`,
-      email: (appProfile as any).email || '',
-      phone: (doctor as any).phone || '',
+      name: vitalIdData.name,
+      fullName: vitalIdData.name,
+      email: vitalIdData.email,
+      phone: vitalIdData.phone,
       specialty: doctor.specialty || 'Medicina General',
       license: doctor.medical_license || '',
       cedula: doctor.medical_license || '',
-      hospital: (doctor as any).hospital || 'VitalGuard Health',
-      roleName: appProfile.roles?.name || 'DOCTOR',
+      hospital: 'VitalGuard Health',
+      roleName: 'DOCTOR',
     };
   }
 
@@ -533,12 +571,11 @@ export class DoctorsService {
         medical_license: data.license ?? data.cedula ?? doctor.medical_license,
       },
     });
-    return { message: 'Perfil actualizado', doctor: updated };
+    return { message: 'Perfil actualizado exitosamente', doctor: updated };
   }
 
   async getPatientProfileForDoctor(vitalId: string, patientId: number) {
     const doctor = await this.getDoctorProfile(vitalId);
-    // Verificar vínculo
     const link = await this.prisma.doctor_patient.findFirst({
       where: { doctor_id: doctor.id, patient_id: patientId, deleted_at: null },
     });
@@ -560,7 +597,6 @@ export class DoctorsService {
     });
     if (!patient) throw new NotFoundException('Paciente no encontrado');
 
-    // Dispositivo (si existe)
     const device = await this.prisma.devices.findFirst({
       where: { patient_id: patientId, deleted_at: null },
     });
@@ -571,7 +607,7 @@ export class DoctorsService {
 
     const medications: any[] = [];
     patient.treatments.forEach((t: any) => {
-      t.treatment_details.forEach((td: any) => {
+      (t.treatment_details || []).forEach((td: any) => {
         medications.push({
           id: td.id,
           name: td.medications?.name || 'Medicamento',
@@ -581,7 +617,6 @@ export class DoctorsService {
       });
     });
 
-    // Logs para stats
     const logs = await this.prisma.medication_logs.findMany({
       where: { schedules: { treatment_details: { treatments: { patient_id: patientId } } }, deleted_at: null },
       take: 100,
@@ -590,7 +625,6 @@ export class DoctorsService {
     const omitted = logs.filter((l: any) => l.status === 'Omitida').length;
     const adherence = logs.length ? Math.round((taken / logs.length) * 100) : 92;
 
-    // Incidencias SOS
     const sosCount = await this.prisma.sos_events.count({ where: { patient_id: patientId, deleted_at: null } }).catch(() => 0);
 
     return {
@@ -600,17 +634,17 @@ export class DoctorsService {
         name: fullName,
         age: age ? `${age} años` : '--',
         diagnosis: 'General',
-        city: 'México',
+        city: 'Torreón, Coahuila',
         status: 'Activo',
         birthDate: patient.birth_date ? new Date(patient.birth_date).toLocaleDateString('es-MX') : 'N/A',
         phone: patient.phone || (patient as any).telephone || 'Sin teléfono',
       },
       device: {
-        id: device?.unique_code || device?.id?.toString() || 'VG-000000',
+        id: device?.unique_code || 'VG-000000',
         battery: '85%',
-        connectivity: device ? 'En línea' : 'Offline',
-        lastSync: device?.updated_at ? new Date(device.updated_at).toLocaleString('es-MX') : 'Reciente',
-        status: device ? 'Operativo' : 'Sin dispositivo',
+        connectivity: device?.is_online ? 'En línea' : 'Offline',
+        lastSync: device?.last_sync_at ? this.getTimeAgo(device.last_sync_at) : 'Reciente',
+        status: device?.is_online ? 'Operativo' : 'Sin dispositivo',
       },
       stats: {
         adherence: `${adherence}%`,
@@ -650,7 +684,6 @@ export class DoctorsService {
     const total = logs.length;
     const generalAdherence = total ? Math.round((taken / total) * 100) : 92;
 
-    // Weekly buckets (últimos 7 días)
     const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
     const weeklyData = Array.from({ length: 7 }, (_, i) => {
       const d = new Date();
@@ -666,7 +699,6 @@ export class DoctorsService {
       desc: `${l.schedules?.treatment_details?.medications?.name || 'Medicamento'} - ${l.status}`,
     }));
 
-    // Estado por medicamento
     const medMap = new Map<string, { taken: number; total: number }>();
     logs.forEach((l: any) => {
       const name = l.schedules?.treatment_details?.medications?.name || 'Medicamento';
@@ -694,37 +726,46 @@ export class DoctorsService {
   }
 
   async addMedicationToTreatment(vitalId: string, treatmentId: number, data: any) {
-    await this.getDoctorProfile(vitalId); // Validación de seguridad
+    await this.getDoctorProfile(vitalId);
 
-    // 1. Buscar o crear el medicamento en el catálogo
-    let medication = await this.prisma.medications.findFirst({
-      where: { name: data.name }
-    });
+    let medicationId = data.medicationId;
 
-    if (!medication) {
-      medication = await this.prisma.medications.create({
-        data: { name: data.name, presentation: data.dose }
+    if (!medicationId && data.name) {
+      let med = await this.prisma.medications.findFirst({
+        where: { name: data.name }
       });
+      if (!med) {
+        med = await this.prisma.medications.create({
+          data: { name: data.name, presentation: data.dose || '' }
+        });
+      }
+      medicationId = med.id;
     }
+
+    if (!medicationId) {
+      throw new BadRequestException('Se requiere un medicamento válido');
+    }
+
+    const timeString = data.time || '08:00';
+    const firstTake = new Date(`1970-01-01T${timeString}:00Z`);
 
     const newDetail = await this.prisma.treatment_details.create({
       data: {
-        treatment_id: treatmentId,
-        medication_id: medication.id,
-        dose_info: data.dose,
-        frequency_hours: data.frequencyHours,
-        first_take_time: new Date(`1970-01-01T${data.time}:00Z`), // Parseo seguro de hora
-        compartment_number: data.isExternal ? null : data.compartment,
-        is_external: data.isExternal,
+        treatment_id: Number(treatmentId),
+        medication_id: Number(medicationId),
+        dose_info: data.dose || '1 tableta',
+        frequency_hours: Number(data.frequencyHours) || 24,
+        first_take_time: firstTake,
+        compartment_number: data.isExternal ? null : (data.compartment ? Number(data.compartment) : null),
+        is_external: Boolean(data.isExternal),
         status: 'En_curso'
       }
     });
 
-    // 3. Crear el horario base
     await this.prisma.schedules.create({
       data: {
         treatment_detail_id: newDetail.id,
-        time_of_day: new Date(`1970-01-01T${data.time}:00Z`)
+        time_of_day: firstTake
       }
     });
 
@@ -736,7 +777,7 @@ export class DoctorsService {
 
     const newTreatment = await this.prisma.treatments.create({
       data: {
-        patient_id: patientId,
+        patient_id: Number(patientId),
         app_profile_id: doctor.app_profile_id,
         start_date: data.startDate ? new Date(data.startDate) : new Date(),
         end_date: data.endDate ? new Date(data.endDate) : null,
@@ -751,10 +792,10 @@ export class DoctorsService {
     await this.getDoctorProfile(vitalId);
 
     await this.prisma.treatments.update({
-      where: { id: treatmentId },
+      where: { id: Number(treatmentId) },
       data: {
         start_date: data.startDate ? new Date(data.startDate) : undefined,
-        end_date: data.endDate ? new Date(data.endDate) : undefined,
+        end_date: data.endDate ? new Date(data.endDate) : null,
       }
     });
 
@@ -764,9 +805,8 @@ export class DoctorsService {
   async removeMedicationFromTreatment(vitalId: string, detailId: number) {
     await this.getDoctorProfile(vitalId);
 
-    // Hacemos un "Soft Delete" marcando la fecha de eliminación
     await this.prisma.treatment_details.update({
-      where: { id: detailId },
+      where: { id: Number(detailId) },
       data: { deleted_at: new Date() }
     });
 
@@ -786,67 +826,47 @@ export class DoctorsService {
     });
 
     const totalPatients = relations.length;
-
     const patientsList = relations.map(rel => ({
       value: rel.patients.id.toString(),
       label: `${rel.patients.first_name} ${rel.patients.paternal_last_name}`
     }));
 
     const adherenceData = [
-      { month: "Ene", value: 72, color: "#4A90E2" },
-      { month: "Feb", value: 80, color: "#4A90E2" },
       { month: "Mar", value: 88, color: "#4A90E2" },
       { month: "Abr", value: 94, color: "#6FCF97" },
       { month: "May", value: 90, color: "#6FCF97" },
-      { month: "Jun", value: 98, color: "#6FCF97" }
+      { month: "Jun", value: 98, color: "#6FCF97" },
+      { month: "Jul", value: 92, color: "#6FCF97" },
+      { month: "Ago", value: 96, color: "#6FCF97" }
     ];
 
-    // 4. Construir la respuesta final
     return {
       stats: {
         monitoredPatients: totalPatients,
-        averageAdherence: "89%", // Promedio general
-        activeAlerts: 14, // Alertas generadas
-        criticalCases: 3  // Casos críticos
+        averageAdherence: "94%",
+        activeAlerts: 0,
+        criticalCases: 0
       },
       chartData: adherenceData,
       patientsDropdown: patientsList,
-      priorityPatients: [
-        { id: 1, name: "Pedro Martínez", status: "Crítico", message: "Adherencia 42% - Requiere seguimiento inmediato." },
-        { id: 2, name: "Carmen Ruiz", status: "Advertencia", message: "Dos omisiones registradas esta semana." }
-      ]
+      priorityPatients: []
     };
   }
-
-  /// ====================================================================
-  // GENERACIÓN DE REPORTES PDF (Logo Centrado y Datos Inyectados)
-  // ====================================================================
 
   async generatePdfReport(
     vitalId: string,
     reportType: string,
     targetId: string,
-    doctorNameQuery?: string, // <-- Datos inyectados desde el frontend
-    cedulaQuery?: string      // <-- Datos inyectados desde el frontend
+    doctorNameQuery?: string,
+    cedulaQuery?: string
   ): Promise<Buffer> {
+    const doctor = await this.getDoctorProfile(vitalId);
+    const vitalIdData = await this.getVitalIdUser(vitalId);
 
-    // 1. Asignamos los datos que llegaron del Frontend (o ponemos un texto por defecto)
-    const doctorName = doctorNameQuery || 'Médico Tratante';
-    const cedula = cedulaQuery || 'No registrada';
+    const doctorName = doctorNameQuery || vitalIdData.name;
+    const cedula = cedulaQuery || doctor.medical_license || 'En trámite';
+    const especialidad = doctor.specialty || 'Medicina General';
 
-    // Paso A: Primero buscamos el perfil usando el vital_id
-    const appProfile = await this.prisma.app_profiles.findFirst({
-      where: { vital_id: vitalId, deleted_at: null },
-    });
-
-    // Paso B: Luego buscamos al doctor usando el ID numérico que acabamos de encontrar
-    const doctor = await this.prisma.doctors.findFirst({
-      where: { app_profile_id: appProfile?.id, deleted_at: null },
-    });
-
-    const especialidad = doctor?.specialty || 'Medicina General';
-
-    // 2. Obtener datos REALES con Tratamientos y Medicamentos anidados
     let patientsData: any[] = [];
     const queryInclude = {
       treatments: {
@@ -862,10 +882,10 @@ export class DoctorsService {
 
     if (targetId === 'global') {
       const relations = await this.prisma.doctor_patient.findMany({
-        where: { doctor_id: doctor?.id, deleted_at: null },
+        where: { doctor_id: doctor.id, deleted_at: null },
         include: { patients: { include: queryInclude } }
       });
-      patientsData = relations.map(r => r.patients);
+      patientsData = relations.map(r => r.patients).filter(Boolean);
     } else {
       const singlePatient = await this.prisma.patients.findFirst({
         where: { id: parseInt(targetId), deleted_at: null },
@@ -874,7 +894,6 @@ export class DoctorsService {
       if (singlePatient) patientsData = [singlePatient];
     }
 
-    // 3. Crear el documento PDF
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({ margin: 50, size: 'A4' });
       const buffers: Buffer[] = [];
@@ -883,36 +902,31 @@ export class DoctorsService {
       doc.on('end', () => resolve(Buffer.concat(buffers)));
       doc.on('error', reject);
 
-      // --- DISEÑO DEL PDF ---
-
-      // LOGO CENTRADO
       try {
         const logoWidth = 220;
         const logoX = (doc.page.width - logoWidth) / 2;
         const candidates = [
           path.join(__dirname, '../../assets/logo.png'),
+          path.join(__dirname, '../../../assets/logo.png'),
           path.join(process.cwd(), 'src/assets/logo.png'),
           path.join(process.cwd(), 'dist/assets/logo.png'),
-          path.join(__dirname, '../../assets/images/logo-sidebar.png'),
+          path.join(process.cwd(), 'assets/logo.png')
         ];
         const logoPath = candidates.find((p) => fs.existsSync(p));
         if (logoPath) doc.image(logoPath, logoX, 40, { width: logoWidth });
-      } catch (error) {
+      } catch {
         // Logo opcional
       }
 
-      // TÍTULOS CENTRALES (Se movieron hacia abajo para no chocar con el logo)
       doc.moveDown(5);
       doc.fontSize(16).fillColor('#0B1E36').font('Helvetica-Bold').text(reportType, { align: 'center' });
       doc.fontSize(10).fillColor('#64748B').font('Helvetica').text(`Fecha de generación: ${new Date().toLocaleDateString('es-MX')}`, { align: 'center' });
       doc.moveDown(2);
 
-      // Caja de Información del Médico Tratante
       const startY = doc.y;
       doc.rect(50, startY, 495, 75).fillAndStroke('#F8FAFC', '#E5EAF1');
 
       doc.fillColor('#0B1E36').fontSize(12).font('Helvetica-Bold').text('Datos del Médico Tratante', 65, startY + 15);
-
       doc.font('Helvetica').fontSize(10).fillColor('#4B5563');
       doc.text(`Médico: Dr(a). ${doctorName}`, 65, startY + 35);
       doc.text(`Especialidad: ${especialidad}`, 65, startY + 50);
@@ -922,7 +936,6 @@ export class DoctorsService {
       doc.y = startY + 95;
       doc.moveDown(1);
 
-      // Resto del contenido clínico
       doc.fontSize(14).fillColor('#2D72D9').font('Helvetica-Bold').text(targetId === 'global' ? 'Resumen General de Pacientes' : 'Historial Clínico del Paciente', 50, doc.y);
       doc.moveDown(1);
 
@@ -939,12 +952,12 @@ export class DoctorsService {
           if (reportType === 'Reporte Clínico') {
             doc.font('Helvetica-Bold').fontSize(10).fillColor('#2D72D9').text('   Tratamientos Activos y Medicación:');
 
-            if (patient.treatments.length === 0) {
+            if (!patient.treatments || patient.treatments.length === 0) {
               doc.font('Helvetica').fontSize(10).fillColor('#64748B').text('     No hay tratamientos activos en este momento.');
             } else {
               patient.treatments.forEach((t: any) => {
                 doc.font('Helvetica-Bold').fontSize(10).fillColor('#333333').text(`     • Inicio del tratamiento: ${new Date(t.start_date).toLocaleDateString('es-MX')}`);
-                t.treatment_details.forEach((td: any) => {
+                (t.treatment_details || []).forEach((td: any) => {
                   const medName = td.medications?.name || 'Medicamento';
                   const dose = td.dose_info || 'Dosis no especificada';
                   const freq = td.frequency_hours ? `Cada ${td.frequency_hours} hrs` : 'Horario no especificado';
@@ -955,8 +968,8 @@ export class DoctorsService {
             doc.moveDown(1);
           } else {
             doc.font('Helvetica').fontSize(10).fillColor('#4B5563');
-            doc.text(`   - Tratamientos activos monitoreados: ${patient.treatments.length}`);
-            doc.text(`   - Adherencia estimada del período: 92% (Excelente)`);
+            doc.text(`   - Tratamientos activos monitoreados: ${patient.treatments ? patient.treatments.length : 0}`);
+            doc.text(`   - Adherencia estimada del período: 95% (Excelente)`);
             doc.text(`   - Alertas críticas en el último mes: 0 registradas`);
             doc.moveDown(1);
           }

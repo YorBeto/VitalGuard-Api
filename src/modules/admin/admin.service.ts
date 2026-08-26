@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import PDFDocument from 'pdfkit';
 import * as path from 'path';
@@ -6,7 +6,15 @@ import * as fs from 'fs';
 
 @Injectable()
 export class AdminService {
+    private readonly logger = new Logger(AdminService.name);
+
     constructor(private readonly prisma: PrismaService) { }
+
+    // Helper para obtener y limpiar la URL base del SSO
+    private getVitalIdBaseUrl(): string {
+        const rawUrl = process.env.VITAL_ID_API_URL || process.env.VITAL_ID_BASE_URL || 'https://id-api.vitalguard.app';
+        return rawUrl.replace(/['"]+/g, '').replace(/\/+$/, '');
+    }
 
     // Función de ayuda para calcular el tiempo transcurrido
     private getTimeAgo(date: Date | null): string {
@@ -125,23 +133,24 @@ export class AdminService {
         });
 
         const total = doctors.length;
-        const activos = doctors.filter(d => d.app_profiles.is_active).length;
-        const suspendidos = doctors.filter(d => !d.app_profiles.is_active).length;
+        const activos = doctors.filter(d => d.app_profiles?.is_active).length;
+        const suspendidos = doctors.filter(d => !d.app_profiles?.is_active).length;
         const pendientes = 0;
 
         const doctorsList = await Promise.all(doctors.map(async (d) => {
-            const vitalIdData = await this.getVitalIdUser(d.app_profiles.vital_id);
+            const vitalId = d.app_profiles?.vital_id || '';
+            const vitalIdData = await this.getVitalIdUser(vitalId);
             return {
                 id: d.id,
-                vital_id: d.app_profiles.vital_id,
+                vital_id: vitalId,
                 initials: vitalIdData.initials,
                 name: vitalIdData.name,
                 email: vitalIdData.email,
-                specialty: d.specialty,
-                patients: d.doctor_patient.length,
+                specialty: d.specialty || 'Medicina General',
+                patients: d.doctor_patient ? d.doctor_patient.length : 0,
                 date: d.created_at ? new Intl.DateTimeFormat('es-MX').format(d.created_at) : 'N/A',
-                status: d.app_profiles.is_active ? 'Activo' : 'Suspendido',
-                badgeClass: d.app_profiles.is_active ? 'badge-success' : 'badge-danger',
+                status: d.app_profiles?.is_active ? 'Activo' : 'Suspendido',
+                badgeClass: d.app_profiles?.is_active ? 'badge-success' : 'badge-danger',
             };
         }));
 
@@ -171,14 +180,16 @@ export class AdminService {
             }
         });
 
-        if (!doctor) throw new Error("Médico no encontrado");
+        if (!doctor) throw new NotFoundException("Médico no encontrado");
 
-        const vitalIdData = await this.getVitalIdUser(doctor.app_profiles.vital_id);
+        const vitalIdData = await this.getVitalIdUser(doctor.app_profiles?.vital_id || '');
 
-        const patientsList = doctor.doctor_patient.map(dp => dp.patients);
+        const patientsList = doctor.doctor_patient ? doctor.doctor_patient.map(dp => dp.patients).filter(Boolean) : [];
         let activeTreatmentsCount = 0;
         patientsList.forEach(p => {
-            activeTreatmentsCount += p.treatments.filter(t => t.status === 'Activo').length;
+            if (p.treatments) {
+                activeTreatmentsCount += p.treatments.filter(t => t.status === 'Activo').length;
+            }
         });
 
         const recentPatients: Array<{
@@ -232,11 +243,11 @@ export class AdminService {
                 initials: vitalIdData.initials,
                 name: vitalIdData.name,
                 email: vitalIdData.email,
-                specialty: doctor.specialty,
-                license: doctor.medical_license,
+                specialty: doctor.specialty || 'Medicina General',
+                license: doctor.medical_license || 'N/A',
                 date: doctor.created_at ? new Intl.DateTimeFormat('es-MX', { day: '2-digit', month: 'long', year: 'numeric' }).format(doctor.created_at) : 'N/A',
-                status: doctor.app_profiles.is_active ? 'Activo' : 'Suspendido',
-                badgeClass: doctor.app_profiles.is_active ? 'badge-success' : 'badge-danger',
+                status: doctor.app_profiles?.is_active ? 'Activo' : 'Suspendido',
+                badgeClass: doctor.app_profiles?.is_active ? 'badge-success' : 'badge-danger',
             },
             stats: {
                 patients: patientsList.length,
@@ -253,14 +264,11 @@ export class AdminService {
     // ==========================================
     private async getVitalIdUser(vitalId: string) {
         if (!vitalId || !/^[0-9a-fA-F-]{36}$/.test(vitalId)) {
-            return { name: "Médico (Datos no disponibles)", email: "error@conexion.com", initials: "MD" };
+            return { name: "Médico (Datos no disponibles)", email: "error@conexion.com", initials: "MD", firstName: "", lastName: "", maternalLastName: "", phone: "", birthDate: "", gender: "M", address: "" };
         }
         try {
-            const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-            if (!vitalIdBaseUrl) {
-                return { name: "Médico (Datos no disponibles)", email: "error@conexion.com", initials: "MD" };
-            }
-            const endpoint = `${vitalIdBaseUrl.replace(/\/$/, '')}/auth/user/${encodeURIComponent(vitalId)}`;
+            const vitalIdBaseUrl = this.getVitalIdBaseUrl();
+            const endpoint = `${vitalIdBaseUrl}/auth/user/${encodeURIComponent(vitalId)}`;
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 5000);
             const response = await fetch(endpoint, { signal: controller.signal });
@@ -269,47 +277,35 @@ export class AdminService {
             if (response.ok) {
                 const responseJson: any = await response.json();
                 const userData = responseJson.data ? responseJson.data : responseJson;
-
-                // 🔍 LOG DIAGNÓSTICO: Esto te imprimirá en la consola de VitalGuard exactamente qué llegó del SSO
-                console.log(`\n📦 DATOS RECIBIDOS DEL SSO PARA: ${userData.email}`);
-                console.log(userData);
-
                 const personData = userData.persons || userData.person || {};
 
-                // 👇 A PRUEBA DE BALAS: Buscamos tanto en snake_case como en camelCase
-                const firstName = personData.first_name || personData.firstName || '';
-                const lastName = personData.paternal_last_name || personData.paternalLastName || personData.lastName || '';
+                const firstName = personData.first_name || personData.firstName || userData.first_name || userData.firstName || '';
+                const lastName = personData.paternal_last_name || personData.paternalLastName || personData.lastName || userData.last_name || userData.lastName || '';
                 const maternalLastName = personData.maternal_last_name || personData.maternalLastName || '';
-
-                // El teléfono suele venir directo en el usuario, no en 'persons'
                 const phone = userData.phone || userData.phoneNumber || personData.phone || '';
-
-                // Aseguramos el formato YYYY-MM-DD para que el input de HTML lo entienda
                 const rawBirthDate = personData.birth_date || personData.birthDate || '';
                 const birthDate = rawBirthDate ? rawBirthDate.split('T')[0] : '';
-
                 const gender = personData.gender || 'M';
                 const address = personData.address || '';
-
                 const fullName = `${firstName} ${lastName}`.trim();
 
                 return {
-                    name: fullName || `Médico (Sin nombre)`,
+                    name: fullName || `Médico`,
                     email: userData.email || "Sin correo",
                     initials: firstName ? firstName.substring(0, 2).toUpperCase() : "MD",
-                    firstName: firstName,
-                    lastName: lastName,
-                    maternalLastName: maternalLastName,
-                    phone: phone,
-                    birthDate: birthDate,
-                    gender: gender,
-                    address: address,
+                    firstName,
+                    lastName,
+                    maternalLastName,
+                    phone,
+                    birthDate,
+                    gender,
+                    address,
                 };
             }
         } catch (error: any) {
-            // Silencioso: usa fallback sin spam de logs
+            this.logger.warn(`No se pudo obtener datos del SSO para ${vitalId}: ${error.message}`);
         }
-        return { name: "Médico (Datos no disponibles)", email: "error@conexion.com", initials: "MD" };
+        return { name: "Médico (Datos no disponibles)", email: "error@conexion.com", initials: "MD", firstName: "", lastName: "", maternalLastName: "", phone: "", birthDate: "", gender: "M", address: "" };
     }
 
     // ==========================================
@@ -338,7 +334,7 @@ export class AdminService {
 
         const patientsList = await Promise.all(patients.map(async (p) => {
             let doctorName = "Sin asignar";
-            if (p.doctor_patient.length > 0) {
+            if (p.doctor_patient && p.doctor_patient.length > 0 && p.doctor_patient[0].doctors?.app_profiles?.vital_id) {
                 const vitalId = p.doctor_patient[0].doctors.app_profiles.vital_id;
                 const doctorData = await this.getVitalIdUser(vitalId);
                 doctorName = doctorData.name;
@@ -423,7 +419,7 @@ export class AdminService {
             }
         });
 
-        if (!patient) throw new Error("Paciente no encontrado");
+        if (!patient) throw new NotFoundException("Paciente no encontrado");
 
         const birthDate = new Date(patient.birth_date);
         let age = new Date().getFullYear() - birthDate.getFullYear();
@@ -431,7 +427,7 @@ export class AdminService {
         if (m < 0 || (m === 0 && new Date().getDate() < birthDate.getDate())) age--;
 
         let doctorName = "Sin asignar";
-        if (patient.doctor_patient.length > 0) {
+        if (patient.doctor_patient && patient.doctor_patient.length > 0 && patient.doctor_patient[0].doctors?.app_profiles?.vital_id) {
             const vitalId = patient.doctor_patient[0].doctors.app_profiles.vital_id;
             const doctorData = await this.getVitalIdUser(vitalId);
             doctorName = doctorData.name;
@@ -546,7 +542,7 @@ export class AdminService {
             }
         });
 
-        if (!device) throw new Error("Dispositivo no encontrado");
+        if (!device) throw new NotFoundException("Dispositivo no encontrado");
 
         let doctorName = "Sin asignar";
         let patientAdherence = 0;
@@ -559,7 +555,7 @@ export class AdminService {
             if (new Date().getMonth() < birthDate.getMonth()) age--;
             patientAge = `${age} años`;
 
-            if (device.patients.doctor_patient.length > 0) {
+            if (device.patients.doctor_patient && device.patients.doctor_patient.length > 0 && device.patients.doctor_patient[0].doctors?.app_profiles?.vital_id) {
                 const vitalId = device.patients.doctor_patient[0].doctors.app_profiles.vital_id;
                 const doctorData = await this.getVitalIdUser(vitalId);
                 doctorName = doctorData.name;
@@ -580,11 +576,11 @@ export class AdminService {
             let medicationName = "Libre";
             let isOccupied = false;
 
-            if (device.patients) {
+            if (device.patients && device.patients.treatments) {
                 for (const treatment of device.patients.treatments) {
-                    if (treatment.status === 'Activo') {
+                    if (treatment.status === 'Activo' && treatment.treatment_details) {
                         const detail = treatment.treatment_details.find(td => td.compartment_number === i && td.status === 'En_curso');
-                        if (detail) {
+                        if (detail && detail.medications) {
                             medicationName = detail.medications.name;
                             isOccupied = true;
                             break;
@@ -607,7 +603,7 @@ export class AdminService {
                 sync: device.last_sync_at ? this.getTimeAgo(device.last_sync_at) : 'Nunca',
             },
             stats: {
-                battery: '100%', wifi: '98%', alerts: device.sos_events.length, syncAgo: device.last_sync_at ? this.getTimeAgo(device.last_sync_at) : 'Nunca'
+                battery: '100%', wifi: '98%', alerts: device.sos_events ? device.sos_events.length : 0, syncAgo: device.last_sync_at ? this.getTimeAgo(device.last_sync_at) : 'Nunca'
             },
             patient: { name: device.patients ? `${device.patients.first_name} ${device.patients.paternal_last_name}`.trim() : 'Sin asignar', doctor: doctorName, age: patientAge, adherence: `${patientAdherence}%`, status: patientStatus },
             compartments
@@ -675,10 +671,12 @@ export class AdminService {
     }
 
     // ==========================================
-    // ENDPOINT: DETALLE DE INCIDENCIA (SOS)
+    // ENDPOINT: DETALLE DE INCIDENCIA (MULTITIPO)
     // ==========================================
     async getIncidentDetail(idRef: string) {
-        const [prefix, rawId] = idRef.split('-');
+        const parts = idRef.split('-');
+        const prefix = parts.length > 1 ? parts[0] : 'SOS';
+        const rawId = parts.length > 1 ? parts[1] : parts[0];
         const id = parseInt(rawId);
 
         if (prefix === 'SOS') {
@@ -687,10 +685,10 @@ export class AdminService {
                 include: { patients: { include: { doctor_patient: { include: { doctors: { include: { app_profiles: true } } } } } }, devices: true }
             });
 
-            if (!sos) throw new Error("Incidencia no encontrada");
+            if (!sos) throw new NotFoundException("Incidencia SOS no encontrada");
 
             let doctorName = "Sin asignar";
-            if (sos.patients?.doctor_patient?.length > 0) {
+            if (sos.patients?.doctor_patient && sos.patients.doctor_patient.length > 0 && sos.patients.doctor_patient[0].doctors?.app_profiles?.vital_id) {
                 const vitalId = sos.patients.doctor_patient[0].doctors.app_profiles.vital_id;
                 const doctorData = await this.getVitalIdUser(vitalId);
                 doctorName = doctorData.name;
@@ -702,7 +700,7 @@ export class AdminService {
             return {
                 header: { title: "SOS Activado", subtitle: "Paciente solicitó asistencia urgente.", priorityBadge: "Prioridad Crítica", badgeClass: "badge-danger" },
                 stats: { date: formattedDate, time: formattedTime, device: sos.devices?.unique_code || 'N/A', status: sos.status === 'Activo' ? 'Abierta' : 'Resuelta' },
-                info: { patient: sos.patients ? `${sos.patients.first_name} ${sos.patients.paternal_last_name}` : 'Desconocido', doctor: doctorName, device: sos.devices?.unique_code || 'N/A', firmware: sos.devices?.firmware_version || 'v1.0.0', location: "Mérida, Yucatán", description: `El paciente activó manualmente el botón SOS.` },
+                info: { patient: sos.patients ? `${sos.patients.first_name} ${sos.patients.paternal_last_name}` : 'Desconocido', doctor: doctorName, device: sos.devices?.unique_code || 'N/A', firmware: sos.devices?.firmware_version || 'v1.0.0', location: "Torreón, Coahuila", description: `El paciente activó manualmente el botón SOS.` },
                 timeline: [
                     { title: "SOS Activado", description: "Botón presionado.", time: formattedTime, status: "completed" },
                     { title: "Evento MQTT Recibido", description: "Broker registró emergencia.", time: formattedTime, status: "completed" },
@@ -712,7 +710,41 @@ export class AdminService {
                 isActive: sos.status === 'Activo'
             };
         }
-        throw new Error("Formato de detalle no soportado todavía");
+
+        if (prefix === 'OMI') {
+            const om = await this.prisma.medication_logs.findUnique({
+                where: { id },
+                include: { schedules: { include: { treatment_details: { include: { medications: true, treatments: { include: { patients: true } } } } } } }
+            });
+
+            if (!om) throw new NotFoundException("Registro de omisión no encontrado");
+
+            const patient = om.schedules?.treatment_details?.treatments?.patients;
+            const medName = om.schedules?.treatment_details?.medications?.name || 'Medicamento';
+            const formattedDate = om.scheduled_datetime ? new Intl.DateTimeFormat('es-MX', { day: '2-digit', month: '2-digit' }).format(om.scheduled_datetime) : 'N/A';
+            const formattedTime = om.scheduled_datetime ? new Intl.DateTimeFormat('es-MX', { hour: '2-digit', minute: '2-digit', hour12: true }).format(om.scheduled_datetime) : 'N/A';
+
+            return {
+                header: { title: "Dosis Omitida", subtitle: `Omisión en la toma de ${medName}`, priorityBadge: "Prioridad Media", badgeClass: "badge-warning" },
+                stats: { date: formattedDate, time: formattedTime, device: "VitalGuard", status: "Pendiente" },
+                info: { patient: patient ? `${patient.first_name} ${patient.paternal_last_name}` : 'Desconocido', doctor: "Tratante", device: "Pastillero", firmware: "v1.0.0", location: "Torreón, Coahuila", description: `El paciente no confirmó la toma programada de ${medName}.` },
+                timeline: [
+                    { title: "Alarma Programada", description: "El pastillero emitió recordatorio.", time: formattedTime, status: "completed" },
+                    { title: "Tiempo de espera vencido", description: "No se detectó apertura del compartimento.", time: formattedTime, status: "completed" },
+                    { title: "Registro como Omitida", description: "Se registró la falta de toma en el sistema.", time: formattedTime, status: "completed" }
+                ],
+                isActive: true
+            };
+        }
+
+        // Fallback genérico para DEV u otros
+        return {
+            header: { title: "Evento Técnico", subtitle: "Diagnóstico general de dispositivo", priorityBadge: "Informativa", badgeClass: "badge-info" },
+            stats: { date: "Hoy", time: "Reciente", device: `DEV-${id}`, status: "Revisión" },
+            info: { patient: "N/A", doctor: "Soporte Técnico", device: `DEV-${id}`, firmware: "v1.0.0", location: "Torreón, Coahuila", description: "Reporte de estado de conectividad." },
+            timeline: [{ title: "Diagnóstico generado", description: "Estado registrado.", time: "Hoy", status: "completed" }],
+            isActive: false
+        };
     }
 
     // ==========================================
@@ -802,8 +834,9 @@ export class AdminService {
         const doctors = await this.prisma.doctors.findMany({ where: { deleted_at: null }, include: { doctor_patient: true, app_profiles: true }, orderBy: { doctor_patient: { _count: 'desc' } }, take: 3 });
 
         const topDoctors = await Promise.all(doctors.map(async (doc, index) => {
-            const vitalIdData = await this.getVitalIdUser(doc.app_profiles.vital_id);
-            return { rank: `#${index + 1}`, name: `Dr(a). ${vitalIdData.name}`, patients: doc.doctor_patient.length, adherence: `${Math.floor(Math.random() * (99 - 85 + 1) + 85)}%` };
+            const vitalId = doc.app_profiles?.vital_id || '';
+            const vitalIdData = await this.getVitalIdUser(vitalId);
+            return { rank: `#${index + 1}`, name: `Dr(a). ${vitalIdData.name}`, patients: doc.doctor_patient ? doc.doctor_patient.length : 0, adherence: `${Math.floor(Math.random() * (99 - 85 + 1) + 85)}%` };
         }));
 
         const monthlyData = [
@@ -827,11 +860,20 @@ export class AdminService {
             doc.on('error', reject);
 
             try {
-                const logoWidth = 220; const logoX = (doc.page.width - logoWidth) / 2;
-                const candidates = [path.join(__dirname, '../../assets/logo.png'), path.join(process.cwd(), 'src/assets/logo.png'), path.join(process.cwd(), 'dist/assets/logo.png')];
+                const logoWidth = 220;
+                const logoX = (doc.page.width - logoWidth) / 2;
+                const candidates = [
+                    path.join(__dirname, '../../assets/logo.png'),
+                    path.join(__dirname, '../../../assets/logo.png'),
+                    path.join(process.cwd(), 'src/assets/logo.png'),
+                    path.join(process.cwd(), 'dist/assets/logo.png'),
+                    path.join(process.cwd(), 'assets/logo.png')
+                ];
                 const logoPath = candidates.find((p) => fs.existsSync(p));
                 if (logoPath) doc.image(logoPath, logoX, 40, { width: logoWidth });
-            } catch (error) { }
+            } catch (error) {
+                this.logger.warn("No se pudo incrustar el logo en el PDF");
+            }
 
             doc.moveDown(5);
             doc.fontSize(18).fillColor('#0B1E36').font('Helvetica-Bold').text('Reporte Global de Operaciones', { align: 'center' });
@@ -897,7 +939,6 @@ export class AdminService {
                 name: vitalIdData.name,
                 email: vitalIdData.email,
                 status: profile.is_active ? 'Activo' : 'Suspendido',
-                // Pasamos también el resto de los datos para rellenar el formulario de Editar
                 firstName: vitalIdData.firstName,
                 lastName: vitalIdData.lastName,
                 maternalLastName: vitalIdData.maternalLastName,
@@ -915,31 +956,42 @@ export class AdminService {
     // ENDPOINT: CREAR ADMINISTRADOR (Manda al SSO)
     // ==========================================
     async createAdmin(data: any) {
-        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada en el servidor.");
+        const vitalIdBaseUrl = this.getVitalIdBaseUrl();
 
         try {
             const payloadBody = {
-                email: data.email, password: data.password, first_name: data.firstName, paternal_last_name: data.lastName, maternal_last_name: data.maternalLastName || "", phone: data.phone.trim(), birth_date: data.birthDate, gender: data.gender, address: data.address || "", two_factor_enabled: false
+                email: data.email,
+                password: data.password,
+                first_name: data.firstName,
+                paternal_last_name: data.lastName,
+                maternal_last_name: data.maternalLastName || "",
+                phone: (data.phone || "").trim(),
+                birth_date: data.birthDate,
+                gender: data.gender,
+                address: data.address || "",
+                two_factor_enabled: false
             };
 
-            const targetUrl = `${vitalIdBaseUrl.replace(/\/$/, '')}/auth/admin/register`;
-            let ssoResponse;
+            const targetUrl = `${vitalIdBaseUrl}/auth/admin/register`;
+            let ssoResponse: Response;
             try {
-                ssoResponse = await fetch(targetUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payloadBody) });
+                ssoResponse = await fetch(targetUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payloadBody)
+                });
             } catch (networkError: any) {
                 throw new BadRequestException(`Fallo de conexión con el SSO: ${networkError.message}`);
             }
 
             if (!ssoResponse.ok) {
                 const errorText = await ssoResponse.text();
-                let errorMsg = "Error desconocido en el servidor SSO";
+                let errorMsg = "Error en el servidor SSO";
                 try {
                     const errorJson = JSON.parse(errorText);
                     errorMsg = errorJson.message || errorMsg;
                     if (Array.isArray(errorJson.message)) errorMsg = errorJson.message.join(' | ');
-                    else if (errorJson.details && Array.isArray(errorJson.details)) errorMsg = errorJson.details.join(' | ');
-                } catch (e) { errorMsg = errorText || errorMsg; }
+                } catch { errorMsg = errorText || errorMsg; }
                 throw new BadRequestException(`Rechazado por Vital ID: ${errorMsg}`);
             }
 
@@ -978,8 +1030,8 @@ export class AdminService {
         return roles.map(r => ({
             id: r.id,
             role: r.name,
-            app: r.app_name || "WEB",
-            type: r.is_system ? "Sistema" : "Personalizado",
+            app: (r as any).app_name || "WEB",
+            type: (r as any).is_system ? "Sistema" : "Personalizado",
             status: "Activo"
         }));
     }
@@ -997,21 +1049,18 @@ export class AdminService {
     // ==========================================
     async updateAdminDetails(id: number, data: any) {
         const profile = await this.prisma.app_profiles.findUnique({ where: { id } });
-        if (!profile) throw new BadRequestException("Perfil de administrador no encontrado");
+        if (!profile) throw new NotFoundException("Perfil de administrador no encontrado");
 
-        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
-
-        // Mandamos los datos limpios al nuevo endpoint del SSO
-        const targetUrl = `${vitalIdBaseUrl.replace(/\/$/, '')}/auth/admin/update/${profile.vital_id}`;
+        const vitalIdBaseUrl = this.getVitalIdBaseUrl();
+        const targetUrl = `${vitalIdBaseUrl}/auth/admin/update/${profile.vital_id}`;
 
         const payloadBody = {
             email: data.email,
-            password: data.password || undefined, // Solo manda password si no viene vacío
+            password: data.password || undefined,
             firstName: data.firstName,
             paternalLastName: data.lastName,
             maternalLastName: data.maternalLastName,
-            phone: data.phone.trim(),
+            phone: (data.phone || "").trim(),
             birthDate: data.birthDate,
             gender: data.gender,
             address: data.address,
@@ -1027,10 +1076,9 @@ export class AdminService {
 
             if (!ssoRes.ok) {
                 const errorText = await ssoRes.text();
-                throw new Error(errorText); // Atrapado abajo
+                throw new Error(errorText);
             }
 
-            // Actualizamos el estado de activación en VitalGuard si hubo cambio
             if (data.isActive !== undefined) {
                 await this.prisma.app_profiles.update({
                     where: { id },
@@ -1045,90 +1093,94 @@ export class AdminService {
         }
     }
 
+    // ==========================================
+    // SSO: OBTENER TODOS LOS USUARIOS VITAL ID
+    // ==========================================
     async getVitalIdAllUsers() {
-        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
-
-        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/all`);
-        if (!res.ok) throw new BadRequestException("No se pudieron obtener los usuarios del SSO");
-        const json = await res.json();
-        return json.data || json;
+        const vitalIdBaseUrl = this.getVitalIdBaseUrl();
+        try {
+            const res = await fetch(`${vitalIdBaseUrl}/auth/all`);
+            if (!res.ok) {
+                this.logger.error(`Error SSO getVitalIdAllUsers (${res.status}): ${res.statusText}`);
+                throw new BadRequestException("No se pudieron obtener los usuarios del SSO");
+            }
+            const json = await res.json();
+            if (Array.isArray(json)) return json;
+            if (Array.isArray(json.data)) return json.data;
+            if (Array.isArray(json.users)) return json.users;
+            return [];
+        } catch (error: any) {
+            if (error instanceof BadRequestException) throw error;
+            this.logger.error(`Error en getVitalIdAllUsers: ${error.message}`);
+            return [];
+        }
     }
 
+    // ==========================================
+    // SSO: CRUD USUARIOS DIRECTOS
+    // ==========================================
     async createVitalIdUser(data: any) {
-        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
-
-        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/register`, {
+        const vitalIdBaseUrl = this.getVitalIdBaseUrl();
+        const res = await fetch(`${vitalIdBaseUrl}/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
-        if (!res.ok) throw new BadRequestException("Error al crear usuario");
+        if (!res.ok) throw new BadRequestException("Error al crear usuario en SSO");
         return { message: 'Usuario creado exitosamente' };
     }
 
     async updateVitalIdUser(id: string, data: any) {
-        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
-
-        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/${id}`, {
+        const vitalIdBaseUrl = this.getVitalIdBaseUrl();
+        const res = await fetch(`${vitalIdBaseUrl}/auth/${id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
-        if (!res.ok) throw new BadRequestException("Error al actualizar usuario");
+        if (!res.ok) throw new BadRequestException("Error al actualizar usuario en SSO");
         return { message: 'Usuario actualizado exitosamente' };
     }
 
     async deleteVitalIdUser(id: string) {
-        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
-
-        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/${id}`, {
+        const vitalIdBaseUrl = this.getVitalIdBaseUrl();
+        const res = await fetch(`${vitalIdBaseUrl}/auth/${id}`, {
             method: 'DELETE'
         });
-        if (!res.ok) throw new BadRequestException("Error al eliminar usuario");
+        if (!res.ok) throw new BadRequestException("Error al eliminar usuario en SSO");
         return { message: 'Usuario eliminado exitosamente' };
     }
 
     async getVitalUserDetail(id: string) {
-        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
+        const vitalIdBaseUrl = this.getVitalIdBaseUrl();
 
         // 1. Pedir datos básicos al SSO
-        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/user/${id}`);
-        if (!res.ok) throw new BadRequestException("No se pudo obtener el detalle del usuario en el SSO");
+        const res = await fetch(`${vitalIdBaseUrl}/auth/user/${id}`);
+        if (!res.ok) throw new NotFoundException("No se pudo obtener el detalle del usuario en el SSO");
         const json = await res.json();
         const ssoUser = json.data || json;
 
-        // 2. Buscar el rol real en la base de datos local de Vital Guard usando 'vital_id'
+        // 2. Buscar el rol real en la base de datos local usando 'vital_id'
         let roleName = "Usuario / SSO";
         try {
-            // Buscamos el perfil usando 'vital_id' en lugar de 'user_id'
-            const appProfile = await (this.prisma as any).app_profiles.findFirst({
-                where: { vital_id: id }
+            const appProfile = await this.prisma.app_profiles.findFirst({
+                where: { vital_id: id, deleted_at: null },
+                include: { roles: true }
             });
 
-            if (appProfile && appProfile.role_id) {
-                // Buscamos el nombre del rol en la tabla roles
-                const roleRecord = await (this.prisma as any).roles.findUnique({
-                    where: { id: appProfile.role_id }
-                });
-                if (roleRecord) {
-                    roleName = roleRecord.name || roleRecord.role || "Administrador";
+            if (appProfile) {
+                if (appProfile.roles) {
+                    roleName = appProfile.roles.name || (appProfile.roles as any).role || "Usuario";
                 }
             } else {
-                // Verificamos si está registrado como doctor usando 'vital_id'
-                const isDoctor = await (this.prisma as any).doctors.findFirst({
-                    where: { vital_id: id }
+                const doctorProfile = await this.prisma.doctors.findFirst({
+                    where: { app_profiles: { vital_id: id }, deleted_at: null }
                 });
-                if (isDoctor) {
+                if (doctorProfile) {
                     roleName = "Médico";
                 }
             }
-        } catch (e) {
-            // Fallback silencioso si ocurre algún detalle
+        } catch {
+            // Fallback
         }
 
         return {
