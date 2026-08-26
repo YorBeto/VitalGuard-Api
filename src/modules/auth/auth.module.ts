@@ -12,7 +12,9 @@ import { getJwtSecret } from '../../common/config/jwt-secret';
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
       secret: getJwtSecret(),
-      signOptions: { expiresIn: '15m' },
+      // Solo afecta a tokens emitidos por dev-login (bloqueado en producción);
+      // los tokens reales de usuarios los emite VitalID.
+      signOptions: { expiresIn: (process.env.JWT_EXPIRES_IN || '15m') as any },
     }),
   ],
   controllers: [AuthController],
