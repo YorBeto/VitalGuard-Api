@@ -8,7 +8,7 @@ import * as fs from 'fs';
 export class AdminService {
     constructor(private readonly prisma: PrismaService) { }
 
-    // Función de ayuda para calcular el tiempo transcurrido (Ahora acepta null)
+    // Función de ayuda para calcular el tiempo transcurrido
     private getTimeAgo(date: Date | null): string {
         if (!date) return 'Desconocido';
         const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
@@ -27,7 +27,6 @@ export class AdminService {
         const totalDoctors = await this.prisma.doctors.count({ where: { deleted_at: null } });
         const totalDevices = await this.prisma.devices.count({ where: { deleted_at: null } });
 
-        // Omitimos deleted_at aquí por la desincronización con tu DB física
         const activeIncidents = await this.prisma.sos_events.count({ where: { status: 'Activo' } });
 
         const today = new Date();
@@ -45,7 +44,7 @@ export class AdminService {
         });
         const globalAdherence = totalPastLogs > 0 ? Math.round((confirmedLogs / totalPastLogs) * 100) : 0;
 
-        // 3. GRÁFICA DE ACTIVIDAD (Tipada correctamente para evitar el error 'never')
+        // 3. GRÁFICA DE ACTIVIDAD
         const activityData: Array<{ day: string; value: number; height: string }> = [];
         let maxCount = 0;
 
@@ -60,8 +59,6 @@ export class AdminService {
             });
 
             if (count > maxCount) maxCount = count;
-
-            // Formato: "Lun", "Mar", etc.
             const dayName = new Intl.DateTimeFormat('es-MX', { weekday: 'short' }).format(startOfDay);
 
             activityData.push({
@@ -71,12 +68,11 @@ export class AdminService {
             });
         }
 
-        // Calcula el porcentaje de altura para el frontend
         activityData.forEach(item => {
             item.height = maxCount > 0 ? `${Math.round((item.value / maxCount) * 100)}%` : '0%';
         });
 
-        // 4. ACTIVIDAD RECIENTE (Últimas 4 notificaciones)
+        // 4. ACTIVIDAD RECIENTE
         const recentNotifications = await this.prisma.notifications.findMany({
             orderBy: { created_at: 'desc' },
             take: 4,
@@ -96,7 +92,6 @@ export class AdminService {
             notifications: recentNotifications.length > 0 ? 'Online' : 'Sin datos'
         };
 
-        // 6. ESTRUCTURA FINAL
         return {
             stats: {
                 patients: totalPatients,
@@ -134,11 +129,8 @@ export class AdminService {
         const suspendidos = doctors.filter(d => !d.app_profiles.is_active).length;
         const pendientes = 0;
 
-        // Usamos Promise.all porque vamos a hacer peticiones HTTP por cada médico
         const doctorsList = await Promise.all(doctors.map(async (d) => {
-            // 👇 Aquí cruzamos los datos con Vital ID
             const vitalIdData = await this.getVitalIdUser(d.app_profiles.vital_id);
-
             return {
                 id: d.id,
                 vital_id: d.app_profiles.vital_id,
@@ -171,9 +163,7 @@ export class AdminService {
                     include: {
                         patients: {
                             include: {
-                                treatments: {
-                                    where: { deleted_at: null }
-                                }
+                                treatments: { where: { deleted_at: null } }
                             }
                         }
                     }
@@ -185,14 +175,12 @@ export class AdminService {
 
         const vitalIdData = await this.getVitalIdUser(doctor.app_profiles.vital_id);
 
-        // 1. Obtener Pacientes y Tratamientos Activos
         const patientsList = doctor.doctor_patient.map(dp => dp.patients);
         let activeTreatmentsCount = 0;
         patientsList.forEach(p => {
             activeTreatmentsCount += p.treatments.filter(t => t.status === 'Activo').length;
         });
 
-        // 2. Calcular Adherencia Promedio y Estado de los últimos 3 pacientes
         const recentPatients: Array<{
             id: number;
             name: string;
@@ -203,7 +191,6 @@ export class AdminService {
         let totalAdherenceSum = 0;
 
         for (const patient of patientsList) {
-            // Buscar tomas de medicamentos de este paciente
             const pastLogs = await this.prisma.medication_logs.count({
                 where: {
                     schedules: { treatment_details: { treatments: { patient_id: patient.id } } },
@@ -223,7 +210,6 @@ export class AdminService {
             const adherence = pastLogs > 0 ? Math.round((confirmedLogs / pastLogs) * 100) : 0;
             totalAdherenceSum += adherence;
 
-            // Determinar estado de salud / adherencia
             let patientStatus = 'Crítico';
             let statusColor = '#EB5757';
             if (adherence >= 85) { patientStatus = 'Excelente'; statusColor = '#27AE60'; }
@@ -240,7 +226,6 @@ export class AdminService {
 
         const averageAdherence = patientsList.length > 0 ? Math.round(totalAdherenceSum / patientsList.length) : 0;
 
-        // 3. Estructura Final
         return {
             profile: {
                 id: doctor.id,
@@ -257,12 +242,15 @@ export class AdminService {
                 patients: patientsList.length,
                 treatments: activeTreatmentsCount,
                 adherence: averageAdherence,
-                alerts: 0 // Pendiente de cruzar con Notificaciones/SOS del médico
+                alerts: 0
             },
-            recentPatients: recentPatients.slice(0, 3) // Mandamos solo los 3 primeros para la tabla
+            recentPatients: recentPatients.slice(0, 3)
         };
     }
 
+    // ==========================================
+    // MÉTODO PRIVADO: CONEXIÓN AL SSO
+    // ==========================================
     private async getVitalIdUser(vitalId: string) {
         if (!vitalId || !/^[0-9a-fA-F-]{36}$/.test(vitalId)) {
             return { name: "Médico (Datos no disponibles)", email: "error@conexion.com", initials: "MD" };
@@ -277,16 +265,45 @@ export class AdminService {
             const timeout = setTimeout(() => controller.abort(), 5000);
             const response = await fetch(endpoint, { signal: controller.signal });
             clearTimeout(timeout);
+
             if (response.ok) {
                 const responseJson: any = await response.json();
                 const userData = responseJson.data ? responseJson.data : responseJson;
-                const firstName = userData.person?.first_name || '';
-                const lastName = userData.person?.paternal_last_name || '';
+
+                // 🔍 LOG DIAGNÓSTICO: Esto te imprimirá en la consola de VitalGuard exactamente qué llegó del SSO
+                console.log(`\n📦 DATOS RECIBIDOS DEL SSO PARA: ${userData.email}`);
+                console.log(userData);
+
+                const personData = userData.persons || userData.person || {};
+
+                // 👇 A PRUEBA DE BALAS: Buscamos tanto en snake_case como en camelCase
+                const firstName = personData.first_name || personData.firstName || '';
+                const lastName = personData.paternal_last_name || personData.paternalLastName || personData.lastName || '';
+                const maternalLastName = personData.maternal_last_name || personData.maternalLastName || '';
+
+                // El teléfono suele venir directo en el usuario, no en 'persons'
+                const phone = userData.phone || userData.phoneNumber || personData.phone || '';
+
+                // Aseguramos el formato YYYY-MM-DD para que el input de HTML lo entienda
+                const rawBirthDate = personData.birth_date || personData.birthDate || '';
+                const birthDate = rawBirthDate ? rawBirthDate.split('T')[0] : '';
+
+                const gender = personData.gender || 'M';
+                const address = personData.address || '';
+
                 const fullName = `${firstName} ${lastName}`.trim();
+
                 return {
                     name: fullName || `Médico (Sin nombre)`,
                     email: userData.email || "Sin correo",
-                    initials: firstName ? firstName.substring(0, 2).toUpperCase() : "MD"
+                    initials: firstName ? firstName.substring(0, 2).toUpperCase() : "MD",
+                    firstName: firstName,
+                    lastName: lastName,
+                    maternalLastName: maternalLastName,
+                    phone: phone,
+                    birthDate: birthDate,
+                    gender: gender,
+                    address: address,
                 };
             }
         } catch (error: any) {
@@ -305,9 +322,7 @@ export class AdminService {
                 devices: true,
                 doctor_patient: {
                     include: {
-                        doctors: {
-                            include: { app_profiles: true }
-                        }
+                        doctors: { include: { app_profiles: true } }
                     }
                 }
             }
@@ -322,7 +337,6 @@ export class AdminService {
         today.setHours(0, 0, 0, 0);
 
         const patientsList = await Promise.all(patients.map(async (p) => {
-            // 1. Obtener el médico asignado (el primero si hay varios)
             let doctorName = "Sin asignar";
             if (p.doctor_patient.length > 0) {
                 const vitalId = p.doctor_patient[0].doctors.app_profiles.vital_id;
@@ -330,7 +344,6 @@ export class AdminService {
                 doctorName = doctorData.name;
             }
 
-            // 2. Calcular adherencia del paciente
             const pastLogs = await this.prisma.medication_logs.count({
                 where: {
                     schedules: { treatment_details: { treatments: { patient_id: p.id } } },
@@ -350,25 +363,17 @@ export class AdminService {
             const adherence = pastLogs > 0 ? Math.round((confirmedLogs / pastLogs) * 100) : 0;
             globalAdherenceSum += adherence;
 
-            // 3. Alertas de hoy del paciente
             const patientAlerts = await this.prisma.sos_events.count({
-                where: {
-                    patient_id: p.id,
-                    created_at: { gte: today }
-                }
+                where: { patient_id: p.id, created_at: { gte: today } }
             });
             totalAlertsToday += patientAlerts;
 
-            // 4. Determinar estado
             let status = 'Activo';
             let badgeClass = 'badge-success';
             if (adherence < 60) {
-                status = 'Crítico';
-                badgeClass = 'badge-danger';
-                criticalCount++;
+                status = 'Crítico'; badgeClass = 'badge-danger'; criticalCount++;
             } else if (adherence < 85) {
-                status = 'Atención';
-                badgeClass = 'badge-warning';
+                status = 'Atención'; badgeClass = 'badge-warning';
             }
 
             if (p.devices && p.devices.is_online) {
@@ -379,7 +384,7 @@ export class AdminService {
                 id: p.id,
                 initials: `${p.first_name.charAt(0)}${p.paternal_last_name.charAt(0)}`.toUpperCase(),
                 name: `${p.first_name} ${p.paternal_last_name} ${p.maternal_last_name || ''}`.trim(),
-                email: p.phone ? `${p.phone}@vital.com` : "Sin correo", // Placeholder temporal si no hay tabla de usuarios para pacientes
+                email: p.phone ? `${p.phone}@vital.com` : "Sin correo",
                 doctor: doctorName,
                 device: p.devices ? p.devices.unique_code : 'Sin dispositivo',
                 adherence: `${adherence}%`,
@@ -420,15 +425,11 @@ export class AdminService {
 
         if (!patient) throw new Error("Paciente no encontrado");
 
-        // 1. Calcular Edad
         const birthDate = new Date(patient.birth_date);
         let age = new Date().getFullYear() - birthDate.getFullYear();
         const m = new Date().getMonth() - birthDate.getMonth();
-        if (m < 0 || (m === 0 && new Date().getDate() < birthDate.getDate())) {
-            age--;
-        }
+        if (m < 0 || (m === 0 && new Date().getDate() < birthDate.getDate())) age--;
 
-        // 2. Obtener Médico
         let doctorName = "Sin asignar";
         if (patient.doctor_patient.length > 0) {
             const vitalId = patient.doctor_patient[0].doctors.app_profiles.vital_id;
@@ -436,38 +437,21 @@ export class AdminService {
             doctorName = doctorData.name;
         }
 
-        // 3. Adherencia y Estadísticas
         const pastLogs = await this.prisma.medication_logs.count({
-            where: {
-                schedules: { treatment_details: { treatments: { patient_id: patient.id } } },
-                scheduled_datetime: { lte: new Date() },
-                deleted_at: null,
-            }
+            where: { schedules: { treatment_details: { treatments: { patient_id: patient.id } } }, scheduled_datetime: { lte: new Date() }, deleted_at: null }
         });
 
         const confirmedLogs = await this.prisma.medication_logs.count({
-            where: {
-                schedules: { treatment_details: { treatments: { patient_id: patient.id } } },
-                status: 'Confirmado',
-                deleted_at: null,
-            }
+            where: { schedules: { treatment_details: { treatments: { patient_id: patient.id } } }, status: 'Confirmado', deleted_at: null }
         });
 
         const omittedLogs = await this.prisma.medication_logs.count({
-            where: {
-                schedules: { treatment_details: { treatments: { patient_id: patient.id } } },
-                status: 'Omitida',
-                deleted_at: null,
-            }
+            where: { schedules: { treatment_details: { treatments: { patient_id: patient.id } } }, status: 'Omitida', deleted_at: null }
         });
 
-        const sosCount = await this.prisma.sos_events.count({
-            where: { patient_id: patient.id }
-        });
-
+        const sosCount = await this.prisma.sos_events.count({ where: { patient_id: patient.id } });
         const adherence = pastLogs > 0 ? Math.round((confirmedLogs / pastLogs) * 100) : 0;
 
-        // 4. Actividad Reciente (Últimos 4 registros combinados)
         const recentLogs = await this.prisma.medication_logs.findMany({
             where: { schedules: { treatment_details: { treatments: { patient_id: patient.id } } } },
             orderBy: { created_at: 'desc' },
@@ -479,7 +463,6 @@ export class AdminService {
             description: log.status === 'Confirmado' ? 'Medicamento Tomado' : `Registro: ${log.status}`
         }));
 
-        // 5. Tratamientos
         const activeTreatments = patient.treatments.map(t => ({
             id: t.id,
             name: `Tratamiento #${t.id}`,
@@ -507,12 +490,7 @@ export class AdminService {
                 battery: '100%',
                 status: patient.devices?.is_online ? 'Conectado' : 'Desconectado',
             },
-            stats: {
-                adherence: `${adherence}%`,
-                totalLogs: pastLogs,
-                alerts: sosCount,
-                omitted: omittedLogs,
-            },
+            stats: { adherence: `${adherence}%`, totalLogs: pastLogs, alerts: sosCount, omitted: omittedLogs },
             treatments: activeTreatments,
             recentActivity
         };
@@ -530,30 +508,24 @@ export class AdminService {
         const total = devices.length;
         const enLinea = devices.filter(d => d.is_online).length;
         const offline = total - enLinea;
-        const otaPendiente = 0; // Se puede calcular si agregas una tabla de versiones OTA
+        const otaPendiente = 0;
         const mqttActivos = enLinea;
 
         const devicesList = devices.map(d => {
             let patientName = "Sin asignar";
-            if (d.patients) {
-                patientName = `${d.patients.first_name} ${d.patients.paternal_last_name}`.trim();
-            }
-
+            if (d.patients) patientName = `${d.patients.first_name} ${d.patients.paternal_last_name}`.trim();
             return {
                 id: d.unique_code,
                 patient: patientName,
                 firmware: d.firmware_version || 'v1.0.0',
-                battery: '100%', // Placeholder: Requiere columna en BD
+                battery: '100%',
                 status: d.is_online ? 'Online' : 'Offline',
                 mqtt: d.is_online ? 'Conectado' : 'Desconectado',
                 sync: d.last_sync_at ? this.getTimeAgo(d.last_sync_at) : 'Nunca',
             };
         });
 
-        return {
-            stats: { total, enLinea, offline, otaPendiente, mqttActivos },
-            devices: devicesList
-        };
+        return { stats: { total, enLinea, offline, otaPendiente, mqttActivos }, devices: devicesList };
     }
 
     // ==========================================
@@ -566,9 +538,7 @@ export class AdminService {
                 patients: {
                     include: {
                         doctor_patient: { include: { doctors: { include: { app_profiles: true } } } },
-                        treatments: {
-                            include: { treatment_details: { include: { medications: true } } }
-                        }
+                        treatments: { include: { treatment_details: { include: { medications: true } } } }
                     }
                 },
                 device_compartments: true,
@@ -583,7 +553,6 @@ export class AdminService {
         let patientAge = "N/A";
         let patientStatus = "Sin asignar";
 
-        // Cálculos del paciente vinculado
         if (device.patients) {
             const birthDate = new Date(device.patients.birth_date);
             let age = new Date().getFullYear() - birthDate.getFullYear();
@@ -606,7 +575,6 @@ export class AdminService {
             patientStatus = patientAdherence >= 60 ? 'Activo' : 'Crítico';
         }
 
-        // Mapeo dinámico de los 5 compartimentos
         const compartments: Array<{ number: number; medication: string; isOccupied: boolean }> = [];
         for (let i = 1; i <= 5; i++) {
             let medicationName = "Libre";
@@ -615,7 +583,6 @@ export class AdminService {
             if (device.patients) {
                 for (const treatment of device.patients.treatments) {
                     if (treatment.status === 'Activo') {
-                        // Buscamos si algún detalle de tratamiento está asignado a este compartimento
                         const detail = treatment.treatment_details.find(td => td.compartment_number === i && td.status === 'En_curso');
                         if (detail) {
                             medicationName = detail.medications.name;
@@ -635,29 +602,16 @@ export class AdminService {
 
         return {
             profile: {
-                id: device.unique_code,
-                firmware: device.firmware_version || 'v1.0.0',
-                mac: "18:4A:22:89:XX", // Placeholder: Requiere columna en BD
-                mqtt: device.is_online ? 'Conectado' : 'Desconectado',
-                status: device.is_online ? 'Online' : 'Offline',
+                id: device.unique_code, firmware: device.firmware_version || 'v1.0.0', mac: "18:4A:22:89:XX",
+                mqtt: device.is_online ? 'Conectado' : 'Desconectado', status: device.is_online ? 'Online' : 'Offline',
                 sync: device.last_sync_at ? this.getTimeAgo(device.last_sync_at) : 'Nunca',
             },
             stats: {
-                battery: '100%', // Placeholder
-                wifi: '98%', // Placeholder
-                alerts: device.sos_events.length,
-                syncAgo: device.last_sync_at ? this.getTimeAgo(device.last_sync_at) : 'Nunca'
+                battery: '100%', wifi: '98%', alerts: device.sos_events.length, syncAgo: device.last_sync_at ? this.getTimeAgo(device.last_sync_at) : 'Nunca'
             },
-            patient: {
-                name: device.patients ? `${device.patients.first_name} ${device.patients.paternal_last_name}`.trim() : 'Sin asignar',
-                doctor: doctorName,
-                age: patientAge,
-                adherence: `${patientAdherence}%`,
-                status: patientStatus
-            },
+            patient: { name: device.patients ? `${device.patients.first_name} ${device.patients.paternal_last_name}`.trim() : 'Sin asignar', doctor: doctorName, age: patientAge, adherence: `${patientAdherence}%`, status: patientStatus },
             compartments
         };
-
     }
 
     // ==========================================
@@ -667,126 +621,56 @@ export class AdminService {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        // 1. SOS (Críticas)
-        const sosEvents = await this.prisma.sos_events.findMany({
-            include: { patients: true, devices: true },
-            orderBy: { created_at: 'desc' },
-            take: 10
-        });
-
-        // 2. Omisiones (Advertencias)
+        const sosEvents = await this.prisma.sos_events.findMany({ include: { patients: true, devices: true }, orderBy: { created_at: 'desc' }, take: 10 });
         const omissions = await this.prisma.medication_logs.findMany({
             where: { status: 'Omitida', deleted_at: null },
-            include: {
-                schedules: {
-                    include: {
-                        treatment_details: {
-                            include: { treatments: { include: { patients: true } } }
-                        }
-                    }
-                }
-            },
-            orderBy: { scheduled_datetime: 'desc' },
-            take: 10
+            include: { schedules: { include: { treatment_details: { include: { treatments: { include: { patients: true } } } } } } },
+            orderBy: { scheduled_datetime: 'desc' }, take: 10
         });
-
-        // 3. Dispositivos Offline (Info)
-        const offlineDevices = await this.prisma.devices.findMany({
-            where: { is_online: false, deleted_at: null },
-            include: { patients: true }
-        });
+        const offlineDevices = await this.prisma.devices.findMany({ where: { is_online: false, deleted_at: null }, include: { patients: true } });
 
         const incidents: any[] = [];
-        let incidenciasHoy = 0;
-        let criticas = 0;
-        let advertencias = 0;
-        let resueltas = 0;
-        let sosActivos = 0;
+        let incidenciasHoy = 0, criticas = 0, advertencias = 0, resueltas = 0, sosActivos = 0;
 
-        // Procesamos SOS
         sosEvents.forEach(sos => {
             if (sos.created_at && sos.created_at >= today) incidenciasHoy++;
-            if (sos.status === 'Activo') {
-                criticas++;
-                sosActivos++;
-            } else {
-                resueltas++;
-            }
-
+            if (sos.status === 'Activo') { criticas++; sosActivos++; } else { resueltas++; }
             const patientName = sos.patients ? `${sos.patients.first_name} ${sos.patients.paternal_last_name}` : 'Desconocido';
 
             incidents.push({
-                id: `SOS-${sos.id}`, // Prefijo para saber de qué tabla viene
-                type: 'SOS',
-                patient: patientName,
-                priority: 'Alta',
-                status: sos.status === 'Activo' ? 'Abierta' : 'Resuelta',
-                badgeClass: sos.status === 'Activo' ? 'badge-danger' : 'badge-success',
-                date: sos.created_at || new Date(),
-                alertType: 'CRÍTICO',
-                alertTitle: 'SOS Activado',
-                alertDescription: `${patientName} activó el botón SOS desde el dispositivo ${sos.devices?.unique_code || 'N/A'}. Ubicación reportada y notificación enviada.`,
-                iconType: 'SOS'
+                id: `SOS-${sos.id}`, type: 'SOS', patient: patientName, priority: 'Alta', status: sos.status === 'Activo' ? 'Abierta' : 'Resuelta',
+                badgeClass: sos.status === 'Activo' ? 'badge-danger' : 'badge-success', date: sos.created_at || new Date(), alertType: 'CRÍTICO',
+                alertTitle: 'SOS Activado', alertDescription: `${patientName} activó el botón SOS desde el dispositivo ${sos.devices?.unique_code || 'N/A'}.`, iconType: 'SOS'
             });
         });
 
-        // Procesamos Omisiones
         omissions.forEach(om => {
             if (om.scheduled_datetime >= today) incidenciasHoy++;
             advertencias++;
-
             const patient = om.schedules?.treatment_details?.treatments?.patients;
             const patientName = patient ? `${patient.first_name} ${patient.paternal_last_name}` : 'Desconocido';
 
             incidents.push({
-                id: `OMI-${om.id}`,
-                type: 'Omisión',
-                patient: patientName,
-                priority: 'Media',
-                status: 'Pendiente',
-                badgeClass: 'badge-warning',
-                date: om.scheduled_datetime,
-                alertType: 'ATENCIÓN',
-                alertTitle: 'Medicamento Omitido',
-                alertDescription: `${patientName} omitió una toma programada para el día de hoy.`,
-                iconType: 'OMISION'
+                id: `OMI-${om.id}`, type: 'Omisión', patient: patientName, priority: 'Media', status: 'Pendiente', badgeClass: 'badge-warning',
+                date: om.scheduled_datetime, alertType: 'ATENCIÓN', alertTitle: 'Medicamento Omitido', alertDescription: `${patientName} omitió una toma programada.`, iconType: 'OMISION'
             });
         });
 
-        // Procesamos Offline
         offlineDevices.forEach(dev => {
             advertencias++;
             incidents.push({
-                id: `DEV-${dev.id}`,
-                type: 'Offline',
-                patient: dev.patients ? `${dev.patients.first_name} ${dev.patients.paternal_last_name}` : 'Sin asignar',
-                priority: 'Baja',
-                status: 'Pendiente',
-                badgeClass: 'badge-warning',
-                date: dev.last_sync_at || new Date(),
-                alertType: 'INFO',
-                alertTitle: 'Dispositivo Offline',
-                alertDescription: `El dispositivo ${dev.unique_code} no reporta conexión MQTT recientemente.`,
-                iconType: 'OFFLINE'
+                id: `DEV-${dev.id}`, type: 'Offline', patient: dev.patients ? `${dev.patients.first_name} ${dev.patients.paternal_last_name}` : 'Sin asignar',
+                priority: 'Baja', status: 'Pendiente', badgeClass: 'badge-warning', date: dev.last_sync_at || new Date(), alertType: 'INFO',
+                alertTitle: 'Dispositivo Offline', alertDescription: `El dispositivo ${dev.unique_code} no reporta conexión.`, iconType: 'OFFLINE'
             });
         });
 
-        // Ordenar cronológicamente (las más recientes primero)
         incidents.sort((a, b) => b.date.getTime() - a.date.getTime());
-
-        // Sacamos 1 de cada tipo para las tarjetas visuales de la izquierda
-        const prioritarias = [
-            incidents.find(i => i.iconType === 'SOS' && i.status === 'Abierta'),
-            incidents.find(i => i.iconType === 'OMISION'),
-            incidents.find(i => i.iconType === 'OFFLINE')
-        ].filter(Boolean);
+        const prioritarias = [incidents.find(i => i.iconType === 'SOS' && i.status === 'Abierta'), incidents.find(i => i.iconType === 'OMISION'), incidents.find(i => i.iconType === 'OFFLINE')].filter(Boolean);
 
         return {
-            stats: { incidenciasHoy, criticas, advertencias, resueltas, sosActivos },
-            prioritarias,
-            table: incidents.map(i => ({
-                id: i.id, type: i.type, patient: i.patient, priority: i.priority, status: i.status, badgeClass: i.badgeClass
-            }))
+            stats: { incidenciasHoy, criticas, advertencias, resueltas, sosActivos }, prioritarias,
+            table: incidents.map(i => ({ id: i.id, type: i.type, patient: i.patient, priority: i.priority, status: i.status, badgeClass: i.badgeClass }))
         };
     }
 
@@ -797,16 +681,10 @@ export class AdminService {
         const [prefix, rawId] = idRef.split('-');
         const id = parseInt(rawId);
 
-        // Si es un SOS, traemos el detalle completo
         if (prefix === 'SOS') {
             const sos = await this.prisma.sos_events.findUnique({
                 where: { id },
-                include: {
-                    patients: {
-                        include: { doctor_patient: { include: { doctors: { include: { app_profiles: true } } } } }
-                    },
-                    devices: true
-                }
+                include: { patients: { include: { doctor_patient: { include: { doctors: { include: { app_profiles: true } } } } } }, devices: true }
             });
 
             if (!sos) throw new Error("Incidencia no encontrada");
@@ -822,37 +700,18 @@ export class AdminService {
             const formattedTime = sos.created_at ? new Intl.DateTimeFormat('es-MX', { hour: '2-digit', minute: '2-digit', hour12: true }).format(sos.created_at) : 'N/A';
 
             return {
-                header: {
-                    title: "SOS Activado",
-                    subtitle: "Paciente solicitó asistencia urgente.",
-                    priorityBadge: "Prioridad Crítica",
-                    badgeClass: "badge-danger",
-                },
-                stats: {
-                    date: formattedDate,
-                    time: formattedTime,
-                    device: sos.devices?.unique_code || 'N/A',
-                    status: sos.status === 'Activo' ? 'Abierta' : 'Resuelta'
-                },
-                info: {
-                    patient: sos.patients ? `${sos.patients.first_name} ${sos.patients.paternal_last_name}` : 'Desconocido',
-                    doctor: doctorName,
-                    device: sos.devices?.unique_code || 'N/A',
-                    firmware: sos.devices?.firmware_version || 'v1.0.0',
-                    location: "Mérida, Yucatán", // Placeholder geográfico
-                    description: `El paciente activó manualmente el botón SOS desde el dispositivo ${sos.devices?.unique_code || ''}. El evento fue recibido por el broker MQTT y se notificó al médico.`
-                },
+                header: { title: "SOS Activado", subtitle: "Paciente solicitó asistencia urgente.", priorityBadge: "Prioridad Crítica", badgeClass: "badge-danger" },
+                stats: { date: formattedDate, time: formattedTime, device: sos.devices?.unique_code || 'N/A', status: sos.status === 'Activo' ? 'Abierta' : 'Resuelta' },
+                info: { patient: sos.patients ? `${sos.patients.first_name} ${sos.patients.paternal_last_name}` : 'Desconocido', doctor: doctorName, device: sos.devices?.unique_code || 'N/A', firmware: sos.devices?.firmware_version || 'v1.0.0', location: "Mérida, Yucatán", description: `El paciente activó manualmente el botón SOS.` },
                 timeline: [
-                    { title: "SOS Activado", description: "Botón presionado desde el dispositivo.", time: formattedTime, status: "completed" },
-                    { title: "Evento MQTT Recibido", description: "Broker registró mensaje de emergencia.", time: formattedTime, status: "completed" },
-                    { title: "Notificación Enviada", description: "Se notificó al médico responsable.", time: formattedTime, status: "completed" },
-                    { title: sos.status === 'Activo' ? "Confirmación Pendiente" : "Incidencia Resuelta", description: sos.status === 'Activo' ? "Esperando cierre del incidente." : "El incidente ha sido atendido.", time: "Actual", status: "current" }
+                    { title: "SOS Activado", description: "Botón presionado.", time: formattedTime, status: "completed" },
+                    { title: "Evento MQTT Recibido", description: "Broker registró emergencia.", time: formattedTime, status: "completed" },
+                    { title: "Notificación Enviada", description: "Se notificó al médico.", time: formattedTime, status: "completed" },
+                    { title: sos.status === 'Activo' ? "Confirmación Pendiente" : "Incidencia Resuelta", description: sos.status === 'Activo' ? "Esperando cierre." : "Incidente atendido.", time: "Actual", status: "current" }
                 ],
                 isActive: sos.status === 'Activo'
             };
         }
-
-        // Aquí podrías agregar "else if (prefix === 'OMI')" si lo necesitas en el futuro.
         throw new Error("Formato de detalle no soportado todavía");
     }
 
@@ -860,101 +719,54 @@ export class AdminService {
     // ENDPOINT: DASHBOARD DE FIRMWARE OTA
     // ==========================================
     async getFirmwareDashboard() {
-        // Obtenemos todos los dispositivos físicos
-        const devices = await this.prisma.devices.findMany({
-            where: { deleted_at: null },
-            orderBy: { last_sync_at: 'desc' }
-        });
-
-        // Simulamos que la versión más reciente que subiste es la v1.0.4
+        const devices = await this.prisma.devices.findMany({ where: { deleted_at: null }, orderBy: { last_sync_at: 'desc' } });
         const TARGET_VERSION = "v1.0.4";
-
         const total = devices.length;
         const actualizados = devices.filter(d => d.firmware_version === TARGET_VERSION).length;
         const pendientes = total - actualizados;
         const progressPercentage = total > 0 ? Math.round((actualizados / total) * 100) : 0;
 
-        // Generamos la tabla de estado de dispositivos cruzando con tu tabla real
         const deviceTable = devices.map(d => ({
-            id: d.unique_code,
-            version: d.firmware_version || 'Desconocida',
-            status: d.firmware_version === TARGET_VERSION ? 'Actualizado' : 'Pendiente',
-            badgeClass: d.firmware_version === TARGET_VERSION ? 'badge-success' : 'badge-warning',
-            sync: d.last_sync_at ? this.getTimeAgo(d.last_sync_at) : 'Nunca'
+            id: d.unique_code, version: d.firmware_version || 'Desconocida', status: d.firmware_version === TARGET_VERSION ? 'Actualizado' : 'Pendiente',
+            badgeClass: d.firmware_version === TARGET_VERSION ? 'badge-success' : 'badge-warning', sync: d.last_sync_at ? this.getTimeAgo(d.last_sync_at) : 'Nunca'
         }));
 
-        // Datos simulados del historial (Hasta que crees la tabla 'firmware_releases')
         const history = [
             { version: 'v1.0.4', date: '15 Julio 2026', notes: 'Optimización MQTT, corrección de errores OTA y mejora de batería.', isCurrent: true },
-            { version: 'v1.0.3', date: '01 Junio 2026', notes: 'Mejora del sistema de recordatorios y sincronización cloud.', isCurrent: false },
-            { version: 'v1.0.2', date: '15 Mayo 2026', notes: 'Implementación inicial del monitoreo remoto.', isCurrent: false },
-            { version: 'v1.0.1', date: '10 Abril 2026', notes: 'Versión beta para pruebas internas.', isCurrent: false }
+            { version: 'v1.0.3', date: '01 Junio 2026', notes: 'Mejora del sistema de recordatorios.', isCurrent: false },
+            { version: 'v1.0.2', date: '15 Mayo 2026', notes: 'Implementación inicial.', isCurrent: false },
+            { version: 'v1.0.1', date: '10 Abril 2026', notes: 'Versión beta interna.', isCurrent: false }
         ];
 
-        return {
-            stats: {
-                targetVersion: TARGET_VERSION,
-                total,
-                pendientes,
-                actualizados,
-                progressPercentage
-            },
-            activeRelease: {
-                version: TARGET_VERSION,
-                publishDate: '15 Julio 2026',
-                description: 'Actualización de estabilidad MQTT, optimización energética y corrección de sincronización.'
-            },
-            deviceTable,
-            history
-        };
+        return { stats: { targetVersion: TARGET_VERSION, total, pendientes, actualizados, progressPercentage }, activeRelease: { version: TARGET_VERSION, publishDate: '15 Julio 2026', description: 'Actualización de estabilidad MQTT.' }, deviceTable, history };
     }
 
     // ==========================================
-    // ENDPOINT: LOGS TÉCNICOS (Híbrido)
+    // ENDPOINT: LOGS TÉCNICOS
     // ==========================================
     async getTechnicalLogs() {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
         const logs: any[] = [];
-        let eventosHoy = 0;
-        let errores = 0;
-        let countMqtt = 0;
-        let countOta = 0;
+        let eventosHoy = 0, errores = 0, countMqtt = 0, countOta = 0;
 
-        // 1. Obtener eventos reales de la base de datos (SOS)
-        const sosEvents = await this.prisma.sos_events.findMany({
-            include: { devices: true },
-            orderBy: { created_at: 'desc' },
-            take: 5
-        });
+        const sosEvents = await this.prisma.sos_events.findMany({ include: { devices: true }, orderBy: { created_at: 'desc' }, take: 5 });
 
         sosEvents.forEach(sos => {
             if (sos.created_at && sos.created_at >= today) eventosHoy++;
-
             logs.push({
                 id: `SOS-${sos.id}`,
-                date: sos.created_at ? new Intl.DateTimeFormat('es-MX', {
-                    year: 'numeric', month: '2-digit', day: '2-digit',
-                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-                }).format(sos.created_at).replace(',', '') : 'N/A',
-                type: 'SOS',
-                device: sos.devices?.unique_code || 'N/A',
-                message: 'Evento SOS generado por el paciente.',
-                status: 'Crítico',
-                badgeClass: 'badge-danger',
-                rawDate: sos.created_at || new Date(0)
+                date: sos.created_at ? new Intl.DateTimeFormat('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(sos.created_at).replace(',', '') : 'N/A',
+                type: 'SOS', device: sos.devices?.unique_code || 'N/A', message: 'Evento SOS generado por el paciente.', status: 'Crítico', badgeClass: 'badge-danger', rawDate: sos.created_at || new Date(0)
             });
         });
 
-        // 2. Simular logs profundos de IoT/Sistema
         const mockEvents = [
-            { id: 'M-1', type: 'MQTT', device: 'VG-205', message: 'Heartbeat recibido correctamente.', status: 'OK', badgeClass: 'badge-success', rawDate: new Date(Date.now() - 1000 * 60 * 5) },
+            { id: 'M-1', type: 'MQTT', device: 'VG-205', message: 'Heartbeat recibido.', status: 'OK', badgeClass: 'badge-success', rawDate: new Date(Date.now() - 1000 * 60 * 5) },
             { id: 'M-2', type: 'OTA', device: 'VG-212', message: 'Firmware v1.0.4 instalado.', status: 'Completado', badgeClass: 'badge-success', rawDate: new Date(Date.now() - 1000 * 60 * 15) },
-            { id: 'M-3', type: 'ESP32', device: 'VG-178', message: 'Nivel de batería reportado: 19%.', status: 'Advertencia', badgeClass: 'badge-warning', rawDate: new Date(Date.now() - 1000 * 60 * 45) },
-            { id: 'M-4', type: 'MQTT', device: 'VG-178', message: 'Broker desconectado inesperadamente.', status: 'Error', badgeClass: 'badge-danger', rawDate: new Date(Date.now() - 1000 * 60 * 60) },
-            { id: 'M-5', type: 'LOGIN', device: 'ADMIN', message: 'Inicio de sesión exitoso.', status: 'Info', badgeClass: 'badge-info', rawDate: new Date(Date.now() - 1000 * 60 * 120) },
-            { id: 'M-6', type: 'API', device: 'SERVER', message: 'Sincronización con SSO completada.', status: 'OK', badgeClass: 'badge-success', rawDate: new Date(Date.now() - 1000 * 60 * 180) },
+            { id: 'M-3', type: 'ESP32', device: 'VG-178', message: 'Batería: 19%.', status: 'Advertencia', badgeClass: 'badge-warning', rawDate: new Date(Date.now() - 1000 * 60 * 45) },
+            { id: 'M-4', type: 'MQTT', device: 'VG-178', message: 'Broker desconectado.', status: 'Error', badgeClass: 'badge-danger', rawDate: new Date(Date.now() - 1000 * 60 * 60) },
         ];
 
         mockEvents.forEach(mock => {
@@ -965,92 +777,41 @@ export class AdminService {
 
             logs.push({
                 ...mock,
-                date: new Intl.DateTimeFormat('es-MX', {
-                    year: 'numeric', month: '2-digit', day: '2-digit',
-                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-                }).format(mock.rawDate).replace(',', ''),
+                date: new Intl.DateTimeFormat('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(mock.rawDate).replace(',', ''),
             });
         });
 
         logs.sort((a, b) => b.rawDate.getTime() - a.rawDate.getTime());
-
-        return {
-            stats: {
-                eventosHoy: eventosHoy + 12450,
-                errores: errores + 17,
-                mqtt: countMqtt + 4218,
-                ota: countOta + 202
-            },
-            logs: logs.map(({ rawDate, ...rest }) => rest)
-        };
+        return { stats: { eventosHoy: eventosHoy + 12450, errores: errores + 17, mqtt: countMqtt + 4218, ota: countOta + 202 }, logs: logs.map(({ rawDate, ...rest }) => rest) };
     }
 
     // ==========================================
     // ENDPOINT: DASHBOARD DE REPORTES GLOBALES
     // ==========================================
     async getReportsDashboard() {
-        // 1. Estadísticas Globales
         const totalPatients = await this.prisma.patients.count({ where: { deleted_at: null } });
         const totalDoctors = await this.prisma.doctors.count({ where: { deleted_at: null } });
         const totalDevices = await this.prisma.devices.count({ where: { deleted_at: null } });
         const activeIncidents = await this.prisma.sos_events.count({ where: { status: 'Activo' } });
         const connectedDevices = await this.prisma.devices.count({ where: { is_online: true, deleted_at: null } });
 
-        // 2. Cálculo de Adherencia Global
-        const pastLogs = await this.prisma.medication_logs.count({
-            where: { scheduled_datetime: { lte: new Date() }, deleted_at: null }
-        });
-        const confirmedLogs = await this.prisma.medication_logs.count({
-            where: { status: 'Confirmado', deleted_at: null }
-        });
+        const pastLogs = await this.prisma.medication_logs.count({ where: { scheduled_datetime: { lte: new Date() }, deleted_at: null } });
+        const confirmedLogs = await this.prisma.medication_logs.count({ where: { status: 'Confirmado', deleted_at: null } });
         const globalAdherence = pastLogs > 0 ? Math.round((confirmedLogs / pastLogs) * 100) : 0;
 
-        // 3. Top Médicos (Calculamos los 3 con más pacientes para simplificar la vista)
-        const doctors = await this.prisma.doctors.findMany({
-            where: { deleted_at: null },
-            include: { doctor_patient: true, app_profiles: true },
-            orderBy: { doctor_patient: { _count: 'desc' } },
-            take: 3
-        });
+        const doctors = await this.prisma.doctors.findMany({ where: { deleted_at: null }, include: { doctor_patient: true, app_profiles: true }, orderBy: { doctor_patient: { _count: 'desc' } }, take: 3 });
 
         const topDoctors = await Promise.all(doctors.map(async (doc, index) => {
             const vitalIdData = await this.getVitalIdUser(doc.app_profiles.vital_id);
-            return {
-                rank: `#${index + 1}`,
-                name: `Dr(a). ${vitalIdData.name}`,
-                patients: doc.doctor_patient.length,
-                adherence: `${Math.floor(Math.random() * (99 - 85 + 1) + 85)}%` // Adherencia simulada alta para el top
-            };
+            return { rank: `#${index + 1}`, name: `Dr(a). ${vitalIdData.name}`, patients: doc.doctor_patient.length, adherence: `${Math.floor(Math.random() * (99 - 85 + 1) + 85)}%` };
         }));
 
-        // 4. Gráfica Mensual (Datos simulados de los últimos meses, mes actual dinámico)
         const monthlyData = [
-            { month: "Mar", value: "82%", height: "45%" },
-            { month: "Abr", value: "86%", height: "55%" },
-            { month: "May", value: "89%", height: "65%" },
-            { month: "Jun", value: "91%", height: "75%" },
-            { month: "Jul", value: "93%", height: "85%" },
-            { month: "Ago", value: `${globalAdherence}%`, height: `${globalAdherence}%` }
+            { month: "Mar", value: "82%", height: "45%" }, { month: "Abr", value: "86%", height: "55%" }, { month: "May", value: "89%", height: "65%" },
+            { month: "Jun", value: "91%", height: "75%" }, { month: "Jul", value: "93%", height: "85%" }, { month: "Ago", value: `${globalAdherence}%`, height: `${globalAdherence}%` }
         ];
 
-        return {
-            stats: {
-                patients: totalPatients,
-                doctors: totalDoctors,
-                devices: totalDevices,
-                adherence: `${globalAdherence}%`,
-                incidents: activeIncidents
-            },
-            monthlyData,
-            topDoctors,
-            summary: {
-                activePatients: totalPatients,
-                connectedDevices,
-                sosAttended: '98%',
-                otaUpdates: 203,
-                uptime: '99.8%'
-            }
-        };
+        return { stats: { patients: totalPatients, doctors: totalDoctors, devices: totalDevices, adherence: `${globalAdherence}%`, incidents: activeIncidents }, monthlyData, topDoctors, summary: { activePatients: totalPatients, connectedDevices, sosAttended: '98%', otaUpdates: 203, uptime: '99.8%' } };
     }
 
     // ==========================================
@@ -1058,56 +819,37 @@ export class AdminService {
     // ==========================================
     async generateGlobalPdfReport(): Promise<Buffer> {
         const dashboardData = await this.getReportsDashboard();
-
         return new Promise((resolve, reject) => {
             const doc = new PDFDocument({ margin: 50, size: 'A4' });
             const buffers: Buffer[] = [];
-
             doc.on('data', buffers.push.bind(buffers));
             doc.on('end', () => resolve(Buffer.concat(buffers)));
             doc.on('error', reject);
 
-            // --- LOGO CENTRADO ---
             try {
-                const logoWidth = 220;
-                const logoX = (doc.page.width - logoWidth) / 2;
-                const candidates = [
-                    path.join(__dirname, '../../assets/logo.png'),
-                    path.join(process.cwd(), 'src/assets/logo.png'),
-                    path.join(process.cwd(), 'dist/assets/logo.png'),
-                    path.join(__dirname, '../../assets/images/logo-sidebar.png'),
-                ];
+                const logoWidth = 220; const logoX = (doc.page.width - logoWidth) / 2;
+                const candidates = [path.join(__dirname, '../../assets/logo.png'), path.join(process.cwd(), 'src/assets/logo.png'), path.join(process.cwd(), 'dist/assets/logo.png')];
                 const logoPath = candidates.find((p) => fs.existsSync(p));
                 if (logoPath) doc.image(logoPath, logoX, 40, { width: logoWidth });
-            } catch (error) {
-                // Logo opcional, no bloquea PDF
-            }
+            } catch (error) { }
 
-            // --- CABECERA ---
             doc.moveDown(5);
             doc.fontSize(18).fillColor('#0B1E36').font('Helvetica-Bold').text('Reporte Global de Operaciones', { align: 'center' });
             doc.fontSize(10).fillColor('#64748B').font('Helvetica').text(`Generado el: ${new Date().toLocaleDateString('es-MX')} a las ${new Date().toLocaleTimeString('es-MX')}`, { align: 'center' });
             doc.moveDown(2);
 
-            // --- RESUMEN DEL ECOSISTEMA (CAJA GRIS) ---
             const startY = doc.y;
             doc.rect(50, startY, 495, 85).fillAndStroke('#F8FAFC', '#E5EAF1');
-
             doc.fillColor('#0B1E36').fontSize(14).font('Helvetica-Bold').text('Métricas Principales', 65, startY + 15);
-
             doc.font('Helvetica').fontSize(11).fillColor('#4B5563');
             doc.text(`Pacientes Totales: ${dashboardData.stats.patients}`, 65, startY + 40);
             doc.text(`Médicos Activos: ${dashboardData.stats.doctors}`, 65, startY + 60);
-
             doc.text(`Dispositivos IoT: ${dashboardData.stats.devices}`, 300, startY + 40);
             doc.text(`Adherencia Global: ${dashboardData.stats.adherence}`, 300, startY + 60);
-
             doc.y = startY + 110;
 
-            // --- RENDIMIENTO MÉDICO ---
             doc.fontSize(14).fillColor('#2D72D9').font('Helvetica-Bold').text('Top Médicos por Adherencia', 50, doc.y);
             doc.moveDown(1);
-
             if (dashboardData.topDoctors.length === 0) {
                 doc.fontSize(11).fillColor('#64748B').font('Helvetica').text('No hay médicos registrados actualmente.');
             } else {
@@ -1119,8 +861,6 @@ export class AdminService {
             }
 
             doc.moveDown(1);
-
-            // --- ESTADO DEL SISTEMA ---
             doc.fontSize(14).fillColor('#2D72D9').font('Helvetica-Bold').text('Estado del Ecosistema IoT', 50, doc.y);
             doc.moveDown(0.5);
             doc.fontSize(10).fillColor('#4B5563').font('Helvetica');
@@ -1129,7 +869,6 @@ export class AdminService {
             doc.text(`• Disponibilidad del servidor: ${dashboardData.summary.uptime}`);
             doc.text(`• Actualizaciones OTA desplegadas: ${dashboardData.summary.otaUpdates}`);
 
-            // --- FOOTER ---
             const bottomMargin = doc.page.margins.bottom;
             doc.page.margins.bottom = 0;
             doc.font('Helvetica').fontSize(8).fillColor('#94A3B8').text(
@@ -1146,7 +885,6 @@ export class AdminService {
     // ENDPOINT: OBTENER ADMINISTRADORES
     // ==========================================
     async getAdminsList() {
-        // Buscamos los perfiles que tienen el role_id 4 (Admin)
         const adminProfiles = await this.prisma.app_profiles.findMany({
             where: { role_id: 4, deleted_at: null }
         });
@@ -1159,90 +897,243 @@ export class AdminService {
                 name: vitalIdData.name,
                 email: vitalIdData.email,
                 status: profile.is_active ? 'Activo' : 'Suspendido',
+                // Pasamos también el resto de los datos para rellenar el formulario de Editar
+                firstName: vitalIdData.firstName,
+                lastName: vitalIdData.lastName,
+                maternalLastName: vitalIdData.maternalLastName,
+                phone: vitalIdData.phone,
+                birthDate: vitalIdData.birthDate,
+                gender: vitalIdData.gender,
+                address: vitalIdData.address,
             };
         }));
 
-        return adminsList;
+        return adminsList.filter(admin => admin.email !== "error@conexion.com");
     }
 
     // ==========================================
-    // ENDPOINT: CREAR NUEVO ADMINISTRADOR
-    // ==========================================
-    // ==========================================
-    // ENDPOINT: CREAR NUEVO ADMINISTRADOR
+    // ENDPOINT: CREAR ADMINISTRADOR (Manda al SSO)
     // ==========================================
     async createAdmin(data: any) {
         const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
-
-        if (!vitalIdBaseUrl) {
-            throw new BadRequestException("VITAL_ID_API_URL no está configurada en el servidor.");
-        }
+        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada en el servidor.");
 
         try {
-            // Preparamos el paquete de datos
             const payloadBody = {
-                email: data.email,
-                password: data.password,
-                first_name: data.firstName,
-                paternal_last_name: data.lastName,
-                maternal_last_name: data.maternalLastName || "",
-                phone: data.phone, // Si tu SSO exige que sea número ponle: Number(data.phone)
-
-                // 👇 Agregamos la conversión a formato ISO para que NestJS lo acepte
-                birth_date: new Date(data.birthDate).toISOString(),
-
-                gender: data.gender,
-                address: data.address || "",
-                two_factor_enabled: false
+                email: data.email, password: data.password, first_name: data.firstName, paternal_last_name: data.lastName, maternal_last_name: data.maternalLastName || "", phone: data.phone.trim(), birth_date: data.birthDate, gender: data.gender, address: data.address || "", two_factor_enabled: false
             };
 
-            // 🔍 LOG 1: ¿QUÉ ESTAMOS ENVIANDO?
-            console.log("\n=============================================================");
-            console.log("📤 [SSO-POST] Intentando registrar admin. Payload enviado:");
-            console.log(payloadBody);
-            console.log("=============================================================");
-
-            // 1. Mandamos a crear el usuario en el SSO (Puerto 4000)
-            const ssoResponse = await fetch(`${vitalIdBaseUrl}/auth/register`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payloadBody)
-            });
+            const targetUrl = `${vitalIdBaseUrl.replace(/\/$/, '')}/auth/admin/register`;
+            let ssoResponse;
+            try {
+                ssoResponse = await fetch(targetUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payloadBody) });
+            } catch (networkError: any) {
+                throw new BadRequestException(`Fallo de conexión con el SSO: ${networkError.message}`);
+            }
 
             if (!ssoResponse.ok) {
-                const errorData = await ssoResponse.json();
-
-                console.log("❌ [SSO-ERROR] Detalles reales del rechazo:");
-                console.log(errorData.details); // Imprimimos la matriz con los errores reales
-
-                // 👇 AHORA LEEMOS LA PROPIEDAD 'details' DEL SSO
-                let errorMsg = errorData.message;
-                if (errorData.details && Array.isArray(errorData.details)) {
-                    errorMsg = errorData.details.join(' | '); // Juntamos los errores reales para leerlos
-                }
-
+                const errorText = await ssoResponse.text();
+                let errorMsg = "Error desconocido en el servidor SSO";
+                try {
+                    const errorJson = JSON.parse(errorText);
+                    errorMsg = errorJson.message || errorMsg;
+                    if (Array.isArray(errorJson.message)) errorMsg = errorJson.message.join(' | ');
+                    else if (errorJson.details && Array.isArray(errorJson.details)) errorMsg = errorJson.details.join(' | ');
+                } catch (e) { errorMsg = errorText || errorMsg; }
                 throw new BadRequestException(`Rechazado por Vital ID: ${errorMsg}`);
             }
 
             const ssoData = await ssoResponse.json();
-            const newVitalId = ssoData.data.id;
+            const newVitalId = ssoData.data?.id || ssoData.id;
+            if (!newVitalId) throw new BadRequestException("El SSO no devolvió el ID del usuario.");
 
-            // 2. Lo registramos en Vital Guard con rol de Admin (ID 4)
             await this.prisma.app_profiles.create({
-                data: {
-                    vital_id: newVitalId,
-                    role_id: 4,
-                    is_active: true
-                }
+                data: { vital_id: newVitalId, role_id: 4, is_active: true }
             });
 
-            return { message: 'Administrador creado y vinculado exitosamente' };
+            return { message: 'Administrador creado exitosamente' };
 
         } catch (error: any) {
-            if (error instanceof BadRequestException) {
-                throw error;
-            }
-            throw new BadRequestException(`Fallo de conexión con el SSO: ${error.message}`);
+            if (error instanceof BadRequestException) throw error;
+            throw new BadRequestException(`Fallo en el proceso de creación: ${error.message}`);
         }
+    }
+
+    // ==========================================
+    // ENDPOINT: ELIMINAR ADMINISTRADOR
+    // ==========================================
+    async deleteAdmin(id: number) {
+        await this.prisma.app_profiles.update({
+            where: { id },
+            data: { deleted_at: new Date(), is_active: false }
+        });
+        return { message: 'Administrador eliminado correctamente' };
+    }
+
+    // ==========================================
+    // ENDPOINT: OBTENER ROLES DEL SISTEMA
+    // ==========================================
+    async getRolesList() {
+        const roles = await this.prisma.roles.findMany({ where: { deleted_at: null } });
+        return roles.map(r => ({
+            id: r.id,
+            role: r.name,
+            app: r.app_name || "WEB",
+            type: r.is_system ? "Sistema" : "Personalizado",
+            status: "Activo"
+        }));
+    }
+
+    async updateAdminStatus(id: number, isActive: boolean) {
+        await this.prisma.app_profiles.update({
+            where: { id },
+            data: { is_active: isActive }
+        });
+        return { message: 'Estado del administrador actualizado exitosamente' };
+    }
+
+    // ==========================================
+    // ENDPOINT: ACTUALIZAR ADMINISTRADOR COMPLETO
+    // ==========================================
+    async updateAdminDetails(id: number, data: any) {
+        const profile = await this.prisma.app_profiles.findUnique({ where: { id } });
+        if (!profile) throw new BadRequestException("Perfil de administrador no encontrado");
+
+        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
+        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
+
+        // Mandamos los datos limpios al nuevo endpoint del SSO
+        const targetUrl = `${vitalIdBaseUrl.replace(/\/$/, '')}/auth/admin/update/${profile.vital_id}`;
+
+        const payloadBody = {
+            email: data.email,
+            password: data.password || undefined, // Solo manda password si no viene vacío
+            firstName: data.firstName,
+            paternalLastName: data.lastName,
+            maternalLastName: data.maternalLastName,
+            phone: data.phone.trim(),
+            birthDate: data.birthDate,
+            gender: data.gender,
+            address: data.address,
+            isActive: data.isActive
+        };
+
+        try {
+            const ssoRes = await fetch(targetUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payloadBody)
+            });
+
+            if (!ssoRes.ok) {
+                const errorText = await ssoRes.text();
+                throw new Error(errorText); // Atrapado abajo
+            }
+
+            // Actualizamos el estado de activación en VitalGuard si hubo cambio
+            if (data.isActive !== undefined) {
+                await this.prisma.app_profiles.update({
+                    where: { id },
+                    data: { is_active: data.isActive }
+                });
+            }
+
+            return { message: 'Administrador actualizado exitosamente' };
+
+        } catch (networkError: any) {
+            throw new BadRequestException(`Fallo al actualizar en el SSO: ${networkError.message}`);
+        }
+    }
+
+    async getVitalIdAllUsers() {
+        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
+        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
+
+        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/all`);
+        if (!res.ok) throw new BadRequestException("No se pudieron obtener los usuarios del SSO");
+        const json = await res.json();
+        return json.data || json;
+    }
+
+    async createVitalIdUser(data: any) {
+        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
+        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
+
+        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (!res.ok) throw new BadRequestException("Error al crear usuario");
+        return { message: 'Usuario creado exitosamente' };
+    }
+
+    async updateVitalIdUser(id: string, data: any) {
+        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
+        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
+
+        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (!res.ok) throw new BadRequestException("Error al actualizar usuario");
+        return { message: 'Usuario actualizado exitosamente' };
+    }
+
+    async deleteVitalIdUser(id: string) {
+        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
+        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
+
+        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/${id}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) throw new BadRequestException("Error al eliminar usuario");
+        return { message: 'Usuario eliminado exitosamente' };
+    }
+
+    async getVitalUserDetail(id: string) {
+        const vitalIdBaseUrl = process.env.VITAL_ID_API_URL;
+        if (!vitalIdBaseUrl) throw new BadRequestException("VITAL_ID_API_URL no está configurada.");
+
+        // 1. Pedir datos básicos al SSO
+        const res = await fetch(`${vitalIdBaseUrl.replace(/\/$/, '')}/auth/user/${id}`);
+        if (!res.ok) throw new BadRequestException("No se pudo obtener el detalle del usuario en el SSO");
+        const json = await res.json();
+        const ssoUser = json.data || json;
+
+        // 2. Buscar el rol real en la base de datos local de Vital Guard usando 'vital_id'
+        let roleName = "Usuario / SSO";
+        try {
+            // Buscamos el perfil usando 'vital_id' en lugar de 'user_id'
+            const appProfile = await (this.prisma as any).app_profiles.findFirst({
+                where: { vital_id: id }
+            });
+
+            if (appProfile && appProfile.role_id) {
+                // Buscamos el nombre del rol en la tabla roles
+                const roleRecord = await (this.prisma as any).roles.findUnique({
+                    where: { id: appProfile.role_id }
+                });
+                if (roleRecord) {
+                    roleName = roleRecord.name || roleRecord.role || "Administrador";
+                }
+            } else {
+                // Verificamos si está registrado como doctor usando 'vital_id'
+                const isDoctor = await (this.prisma as any).doctors.findFirst({
+                    where: { vital_id: id }
+                });
+                if (isDoctor) {
+                    roleName = "Médico";
+                }
+            }
+        } catch (e) {
+            // Fallback silencioso si ocurre algún detalle
+        }
+
+        return {
+            ...ssoUser,
+            role_name: roleName
+        };
     }
 }

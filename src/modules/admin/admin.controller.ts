@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards, Param, Res, Body, Post } from '@nestjs/common';
+import { Controller, Get, UseGuards, Param, Res, Body, Post, Put, Patch, Delete } from '@nestjs/common';
 import type { Response } from 'express';
 import { AdminService } from './admin.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -108,15 +108,68 @@ export class AdminController {
 
     @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles('ADMIN')
-  @Get('admins')
-  async getAdmins() {
-    return await this.adminService.getAdminsList();
-  }
+    @Get('admins')
+    async getAdmins() {
+        return await this.adminService.getAdminsList();
+    }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+    @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles('ADMIN')
-  @Post('admins')
-  async createAdmin(@Body() body: any) {
-    return await this.adminService.createAdmin(body);
-  }
+    @Post('admins')
+    async createAdmin(@Body() body: any) {
+        return await this.adminService.createAdmin(body);
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Patch('admins/:id/status')
+    async updateAdminStatus(@Param('id') id: string, @Body('isActive') isActive: boolean) {
+        return this.adminService.updateAdminStatus(Number(id), isActive);
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Delete('admins/:id')
+    async deleteAdmin(@Param('id') id: string) {
+        return this.adminService.deleteAdmin(Number(id));
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Get('roles')
+    async getRoles() { return this.adminService.getRolesList(); }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Put('admins/:id')
+    async updateAdminDetails(@Param('id') id: string, @Body() data: any) {
+        return this.adminService.updateAdminDetails(Number(id), data);
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Get('vital-users')
+    async getVitalUsers() { return this.adminService.getVitalIdAllUsers(); }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Post('vital-users')
+    async createVitalUser(@Body() data: any) { return this.adminService.createVitalIdUser(data); }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Put('vital-users/:id')
+    async updateVitalUser(@Param('id') id: string, @Body() data: any) { return this.adminService.updateVitalIdUser(id, data); }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Delete('vital-users/:id')
+    async deleteVitalUser(@Param('id') id: string) { return this.adminService.deleteVitalIdUser(id); }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles('ADMIN')
+    @Get('vital-users/:id/detail')
+    async getVitalUserDetail(@Param('id') id: string) {
+        return this.adminService.getVitalUserDetail(id);
+    }
 }

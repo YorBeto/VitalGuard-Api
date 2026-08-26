@@ -5,6 +5,7 @@ import {
   Body,
   Query,
   UseGuards,
+  Param
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -47,5 +48,17 @@ export class MedicationsController {
     @Body() dto: RequestMedicationDto,
   ) {
     return this.medicationsService.requestMedication(vitalId, dto);
+  }
+
+  @Get('requests')
+  @ApiOperation({ summary: 'Listar solicitudes pendientes de medicamentos' })
+  async getRequests(@GetVitalId() vitalId: string) {
+    return this.medicationsService.getPendingRequests(vitalId); 
+  }
+
+  @Post('requests/:id/approve')
+  @ApiOperation({ summary: 'Aprobar solicitud de medicamento y añadirlo al catálogo' })
+  async approveRequest(@Param('id') id: string) {
+    return this.medicationsService.approveMedicationRequest(Number(id));
   }
 }
