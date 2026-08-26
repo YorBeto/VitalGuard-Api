@@ -2,10 +2,15 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class RequestMedicationDto {
-  @ApiProperty({ example: 1, description: 'ID del paciente' })
+  @ApiProperty({ example: 1, description: 'ID del paciente', required: false })
   @IsNumber()
-  @IsNotEmpty({ message: 'El ID del paciente es obligatorio' })
-  patientId!: number;
+  @IsOptional() 
+  patientId?: number;
+
+  @ApiProperty({ example: 15, description: 'ID del tratamiento actual', required: false })
+  @IsNumber()
+  @IsOptional() 
+  treatmentId?: number;
 
   @ApiProperty({ example: 'Ibuprofeno 800mg', description: 'Nombre del medicamento no encontrado' })
   @IsString()

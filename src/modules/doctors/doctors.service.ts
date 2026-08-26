@@ -99,12 +99,77 @@ export class DoctorsService {
     });
     if (!doctor) throw new NotFoundException('Médico no encontrado');
 
-    return [] as any[]; // <-- Arreglado para TypeScript estricto
+    // 1. Consultar la tabla de invitaciones real
+    const pendingInvitations = await this.prisma.patient_invitations.findMany({
+      where: {
+        status: 'PENDIENTE' as any, // Traerá cualquier pendiente
+        deleted_at: null,
+      },
+      include: {
+        patients: true,
+      },
+      orderBy: { created_at: 'desc' },
+    });
+
+    // 2. Mapear los datos al formato exacto que espera tu frontend
+    // 2. Mapear los datos al formato exacto que espera tu frontend
+    return pendingInvitations.map(inv => {
+      const p = inv.patients;
+      const fullName = `${p.first_name} ${p.paternal_last_name}`.trim();
+      const initials = p.first_name && p.paternal_last_name
+        ? `${p.first_name[0]}${p.paternal_last_name[0]}`.toUpperCase()
+        : 'PG';
+
+      let age = 0;
+      if (p.birth_date) {
+        age = new Date().getFullYear() - new Date(p.birth_date as any).getFullYear();
+      }
+
+      return {
+        id: inv.id,
+        initials: initials,
+        name: fullName,
+        age: age,
+        diagnosis: "Pendiente de revisión",
+        city: "No especificada",
+        message: "El paciente ha solicitado que seas su médico tratante en la plataforma VitalGuard.",
+        time: new Date(inv.created_at as any).toLocaleDateString('es-MX')
+      };
+    });
   }
 
   // 2. Aceptar solicitud (Vincular al paciente con el doctor)
+  // 2. Aceptar solicitud (Vincular al paciente con el doctor)
   async acceptRequest(vitalId: string, requestId: number) {
-    return { message: 'Solicitud aceptada y paciente vinculado exitosamente' };
+    const doctor = await this.getDoctorProfile(vitalId);
+
+    // 1. Buscar la invitación pendiente
+    const invitation = await this.prisma.patient_invitations.findFirst({
+      where: { id: requestId, status: 'PENDIENTE', deleted_at: null },
+    });
+
+    if (!invitation) {
+      throw new NotFoundException('La solicitud no existe o ya fue atendida');
+    }
+
+    // 2. Crear la relación oficial en la tabla doctor_patient
+    await this.prisma.doctor_patient.create({
+      data: {
+        doctor_id: doctor.id,
+        patient_id: invitation.patient_id,
+      },
+    });
+
+    // 3. Marcar la invitación como aceptada o eliminarla (Soft Delete)
+    await this.prisma.patient_invitations.update({
+      where: { id: requestId },
+      data: {
+        status: 'ACEPTADA' as any,
+        deleted_at: new Date()
+      },
+    });
+
+    return { message: '¡Solicitud aceptada y paciente vinculado exitosamente!' };
   }
 
   // 3. Rechazar solicitud
