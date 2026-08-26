@@ -295,7 +295,12 @@ export class DevicesService {
   // MQTT: Procesar eventos del ESP32
   // ═══════════════════════════════════════════════════════════
 
-  async handleTomaConfirmada(deviceId: string, status: keyof typeof import('@prisma/client').log_status = 'Confirmado') {
+  async handleTomaConfirmada(
+    deviceId: string,
+    status: keyof typeof import('@prisma/client').log_status = 'Confirmado',
+    dosisId?: number,
+    horario?: string,
+  ) {
     const formattedCode = this.formatDeviceCode(deviceId);
     const device = await this.prisma.devices.findFirst({
       where: { unique_code: formattedCode, deleted_at: null },
@@ -305,7 +310,7 @@ export class DevicesService {
       return;
     }
 
-    this.logger.log(`🔍 [TOMA_CONFIRMADA] Iniciando para dispositivo ${formattedCode}, patientId: ${device.patient_id}`);
+    this.logger.log(`🔍 [TOMA_CONFIRMADA] Iniciando para dispositivo ${formattedCode}, patientId: ${device.patient_id}, dosisId: ${dosisId}, horario: ${horario}`);
 
     // 1. Obtener todos los treatments del paciente
     const treatments = await this.prisma.treatments.findMany({
@@ -318,6 +323,7 @@ export class DevicesService {
             schedules: {
               select: {
                 id: true,
+                scheduled_datetime: true,
               },
             },
           },
@@ -326,30 +332,60 @@ export class DevicesService {
     });
     this.logger.log(`📋 [TOMA_CONFIRMADA] Tratamientos encontrados: ${treatments.length}`);
 
-    // 2. Recolectar todos los schedule IDs de TODOS los treatments
+    // 2. Recolectar schedule IDs
     const allScheduleIds: number[] = [];
+    let specificScheduleIds: number[] = [];
+
     for (const tr of treatments) {
       if (tr.treatment_details) {
         for (const td of tr.treatment_details) {
           if (td.schedules) {
             for (const s of td.schedules) {
               allScheduleIds.push(s.id);
+              if (dosisId && td.id === dosisId) {
+                // Verificar horario si se proporciona
+                if (horario) {
+                  const sTime = new Date(s.scheduled_datetime).toLocaleTimeString('es-MX', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                  });
+                  if (sTime === horario) {
+                    specificScheduleIds.push(s.id);
+                  }
+                } else {
+                  specificScheduleIds.push(s.id);
+                }
+              }
             }
           }
         }
       }
     }
-    this.logger.log(`📅 [TOMA_CONFIRMADA] Schedule IDs recolectados: ${allScheduleIds.length}`, allScheduleIds);
 
-    // 3. Buscar el log Pendiente MÁS RECIENTE asociado a alguno de estos schedules
-    const pendingLog = await this.prisma.medication_logs.findFirst({
-      where: {
-        schedule_id: { in: allScheduleIds },
-        status: 'Pendiente',
-        deleted_at: null,
-      },
-      orderBy: { scheduled_datetime: 'desc' },
-    });
+    let pendingLog: any;
+
+    if (dosisId && specificScheduleIds.length > 0) {
+      this.logger.log(`🎯 [TOMA_CONFIRMADA] Buscando por dosisId ${dosisId} y horario ${horario || 'cualquiera'}`);
+      pendingLog = await this.prisma.medication_logs.findFirst({
+        where: {
+          schedule_id: { in: specificScheduleIds },
+          status: 'Pendiente',
+          deleted_at: null,
+        },
+        orderBy: { scheduled_datetime: 'desc' },
+      });
+    } else {
+      this.logger.log(`📅 [TOMA_CONFIRMADA] Buscando por fallback (scheduleIds: ${allScheduleIds.length})`);
+      pendingLog = await this.prisma.medication_logs.findFirst({
+        where: {
+          schedule_id: { in: allScheduleIds },
+          status: 'Pendiente',
+          deleted_at: null,
+        },
+        orderBy: { scheduled_datetime: 'desc' },
+      });
+    }
 
     if (!pendingLog) {
       // Debug adicional: buscar si hay algún log asociado a estos schedules

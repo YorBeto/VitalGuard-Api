@@ -1,4 +1,4 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Param, Body, UseGuards } from '@nestjs/common';
 import { CaregiversService } from './caregivers.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
@@ -10,5 +10,10 @@ export class CaregiversController {
   @Get('patient/:patientId')
   async findByPatient(@Param('patientId') patientId: string) {
     return this.caregiversService.findByPatient(+patientId);
+  }
+
+  @Patch(':id/priority')
+  async updatePriority(@Param('id') id: string, @Body('priority') priority: number) {
+    return this.caregiversService.updatePriority(+id, priority);
   }
 }

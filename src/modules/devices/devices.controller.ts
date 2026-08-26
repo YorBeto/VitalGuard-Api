@@ -120,6 +120,8 @@ export class DevicesController {
       timestamp?: string;
       compartimento?: number;
       compartment?: number;
+      dosisId?: number;
+      horario?: string;
     },
   ) {
     this.logger(`📌 [MQTT Evento] ${data.deviceId}: ${data.tipo}`);
@@ -132,7 +134,12 @@ export class DevicesController {
 
     const mappedStatus = statusMap[data.tipo];
     if (mappedStatus) {
-      await this.devicesService.handleTomaConfirmada(data.deviceId, mappedStatus);
+      await this.devicesService.handleTomaConfirmada(
+        data.deviceId,
+        mappedStatus,
+        data.dosisId,
+        data.horario,
+      );
       return;
     }
 
