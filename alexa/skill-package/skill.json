@@ -1,0 +1,64 @@
+{
+  "manifest": {
+    "publishingInformation": {
+      "locales": {
+        "es-ES": {
+          "name": "VitalGuard",
+          "summary": "Asistente de medicación y emergencias para pacientes y cuidadores",
+          "examplePhrases": [
+            "Alexa, abre vital guard",
+            "Alexa, pregunta a vital guard cuándo tomo mi medicina",
+            "Alexa, dile a vital guard que ya tomé mi medicina"
+          ],
+          "keywords": ["salud", "medicina", "pastillero", "cuidador", "vitalguard"],
+          "description": "VitalGuard te ayuda a consultar tus tomas, confirmar que ya tomaste tu medicamento y pedir ayuda de emergencia por voz. Requiere vincular tu cuenta de VitalGuard en la app móvil (Conectar Alexa)."
+        },
+        "es-MX": {
+          "name": "VitalGuard",
+          "summary": "Asistente de medicación y emergencias",
+          "examplePhrases": [
+            "Alexa, abre vital guard",
+            "Alexa, pregunta a vital guard qué medicinas tengo hoy"
+          ],
+          "keywords": ["salud", "medicina", "pastillero"],
+          "description": "Consulta tus tomas, confirma tomas y dispara alertas SOS por voz. Requiere Account Linking con Vital ID."
+        }
+      },
+      "isAvailableWorldwide": false,
+      "distributionCountries": ["ES", "MX", "US"],
+      "category": "HEALTH_AND_FITNESS",
+      "distributionMode": "PUBLIC"
+    },
+    "apis": {
+      "custom": {
+        "endpoint": {
+          "uri": "https://api.vitalguard.app/alexa",
+          "sslCertificateType": "Wildcard"
+        },
+        "interfaces": [
+          {
+            "type": "ALEXA_PRESENTATION_APL"
+          }
+        ]
+      }
+    },
+    "manifestVersion": "1.0",
+    "privacyAndCompliance": {
+      "allowsPurchases": false,
+      "usesPersonalInfo": true,
+      "isChildDirected": false,
+      "isExportCompliant": true,
+      "containsAds": false,
+      "locales": {
+        "es-ES": {
+          "privacyPolicyUrl": "https://vitalguard.app/privacidad",
+          "termsOfUseUrl": "https://vitalguard.app/terminos"
+        },
+        "es-MX": {
+          "privacyPolicyUrl": "https://vitalguard.app/privacidad",
+          "termsOfUseUrl": "https://vitalguard.app/terminos"
+        }
+      }
+    }
+  }
+}

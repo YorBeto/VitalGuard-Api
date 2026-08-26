@@ -46,10 +46,11 @@ export class AlexaIdentityService {
         signal: controller.signal,
       });
 
-      console.log(`[Alexa] userinfo -> status ${res.status}`);
+      const rawBody = await res.clone().text().catch(() => '');
+      console.log(`[Alexa] userinfo -> status ${res.status} body=${rawBody.slice(0, 300)}`);
 
       if (res.status === 401 || res.status === 403) {
-        console.warn('[Alexa] userinfo 401/403 -> token inválido/revocado');
+        console.warn(`[Alexa] userinfo 401/403 -> token inválido/revocado body=${rawBody}`);
         throw new UnauthorizedException({
           code: 'B8',
           message:
@@ -59,7 +60,7 @@ export class AlexaIdentityService {
       }
 
       if (!res.ok) {
-        console.warn(`[Alexa] userinfo status ${res.status} -> no se pudo verificar`);
+        console.warn(`[Alexa] userinfo status ${res.status} body=${rawBody} -> no se pudo verificar`);
         throw new UnauthorizedException({
           code: 'B8',
           message:
@@ -68,7 +69,12 @@ export class AlexaIdentityService {
         });
       }
 
-      const data = (await res.json()) as { sub?: string };
+      let data: any;
+      try {
+        data = JSON.parse(rawBody) as { sub?: string };
+      } catch {
+        data = {};
+      }
       console.log(`[Alexa] userinfo body keys: ${Object.keys(data).join(', ')}`);
       if (!data?.sub) {
         console.warn('[Alexa] userinfo sin "sub" en la respuesta');

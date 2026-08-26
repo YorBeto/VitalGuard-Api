@@ -1,0 +1,330 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "mi pastillero",
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "ConsultarTomasIntent",
+          "samples": [
+            "cuándo tomo mi medicina",
+            "cuándo tomo {medicamento}",
+            "a qué hora es mi {medicamento}",
+            "a qué hora me toca {medicamento}",
+            "cuándo me toca {medicamento}",
+            "cuándo me toca {medicamento} a las {hora}",
+            "qué tomo a las {hora}",
+            "qué medicina me toca a las {hora}",
+            "cuándo es mi próxima toma",
+            "cuál es mi próxima medicina",
+            "dime mi próxima toma",
+            "cuándo debo tomar {medicamento}"
+          ],
+          "slots": [
+            {
+              "name": "medicamento",
+              "type": "MedicamentoSlotType"
+            },
+            {
+              "name": "hora",
+              "type": "AMAZON.TIME"
+            }
+          ]
+        },
+        {
+          "name": "ListarTomasHoyIntent",
+          "samples": [
+            "qué medicinas tengo hoy",
+            "qué medicinas me tocan hoy",
+            "lista mis tomas de hoy",
+            "qué me toca tomar hoy",
+            "dime todas mis tomas de hoy",
+            "qué tomo hoy",
+            "cuáles son mis medicamentos de hoy",
+            "qué pastillas tengo hoy"
+          ],
+          "slots": []
+        },
+        {
+          "name": "ConfirmarTomaIntent",
+          "samples": [
+            "ya me tomé {medicamento}",
+            "ya tomé {medicamento}",
+            "ya tomé mi {medicamento}",
+            "ya tomé mi {medicamento} de las {hora}",
+            "ya me tomé mi medicina de las {hora}",
+            "confirma mi toma de {medicamento}",
+            "confirma que ya tomé {medicamento}",
+            "marca como tomada",
+            "marca como tomada {medicamento}",
+            "registra que ya tomé {medicamento}",
+            "me tomé {medicamento}",
+            "ya la tomé",
+            "ya me la tomé",
+            "confirmo",
+            "sí confirmo",
+            "sí ya la tomé"
+          ],
+          "slots": [
+            {
+              "name": "medicamento",
+              "type": "MedicamentoSlotType"
+            },
+            {
+              "name": "hora",
+              "type": "AMAZON.TIME"
+            }
+          ]
+        },
+        {
+          "name": "PosponerTomaIntent",
+          "samples": [
+            "posponer mi {medicamento} {duracion}",
+            "retrasar mi {medicamento} {duracion}",
+            "posponer la toma {duracion}",
+            "retrasar la toma {duracion}",
+            "posponer {medicamento} una hora",
+            "aplaza mi medicina {duracion}"
+          ],
+          "slots": [
+            {
+              "name": "medicamento",
+              "type": "MedicamentoSlotType"
+            },
+            {
+              "name": "duracion",
+              "type": "AMAZON.DURATION"
+            }
+          ]
+        },
+        {
+          "name": "ConsultarAdherenciaIntent",
+          "samples": [
+            "cómo va mi adherencia",
+            "qué tan bien tomo mis medicinas",
+            "cuál es mi adherencia",
+            "dime mi adherencia de {periodo}",
+            "cómo voy con mis tomas",
+            "qué porcentaje llevo"
+          ],
+          "slots": [
+            {
+              "name": "periodo",
+              "type": "PeriodoSlotType"
+            }
+          ]
+        },
+        {
+          "name": "SosIntent",
+          "samples": [
+            "necesito ayuda",
+            "necesito ayuda urgente",
+            "me siento muy mal",
+            "me siento mal",
+            "me duele {sintoma}",
+            "tengo {sintoma}",
+            "emergencia",
+            "emergencia {sintoma}",
+            "ayuda {sintoma}",
+            "llama a mi cuidador",
+            "pide ayuda"
+          ],
+          "slots": [
+            {
+              "name": "sintoma",
+              "type": "SintomaSlotType"
+            }
+          ]
+        },
+        {
+          "name": "CancelarSosIntent",
+          "samples": [
+            "falsa alarma",
+            "cancela la emergencia",
+            "cancela el sos",
+            "no era nada",
+            "estoy bien cancela"
+          ],
+          "slots": []
+        },
+        {
+          "name": "FraseLibreIntent",
+          "samples": [
+            "texto libre {texto}",
+            "quiero decir {texto}",
+            "buscar {texto}",
+            "consulta {texto}"
+          ],
+          "slots": [
+            {
+              "name": "texto",
+              "type": "AMAZON.SearchQuery"
+            }
+          ]
+        }
+      ],
+      "types": [
+        {
+          "name": "MedicamentoSlotType",
+          "values": [
+            { "name": { "value": "metformina", "synonyms": ["metfor", "metformina 500"] } },
+            { "name": { "value": "losartán", "synonyms": ["losartan", "losartan 50"] } },
+            { "name": { "value": "paracetamol", "synonyms": ["paracetamol 500", "acetaminofen"] } },
+            { "name": { "value": "atorvastatina", "synonyms": ["atorvastatina 20"] } },
+            { "name": { "value": "omeprazol", "synonyms": ["omeprazol 20"] } },
+            { "name": { "value": "ibuprofeno", "synonyms": ["ibuprofeno 400"] } }
+          ]
+        },
+        {
+          "name": "SintomaSlotType",
+          "values": [
+            { "name": { "value": "dolor de pecho" } },
+            { "name": { "value": "mareo" } },
+            { "name": { "value": "falta de aire" } },
+            { "name": { "value": "náusea" } },
+            { "name": { "value": "caída", "synonyms": ["me caí", "caida"] } },
+            { "name": { "value": "confusión" } },
+            { "name": { "value": "dolor de cabeza" } },
+            { "name": { "value": "presión alta" } }
+          ]
+        },
+        {
+          "name": "PeriodoSlotType",
+          "values": [
+            { "name": { "value": "hoy", "synonyms": ["este día"] } },
+            { "name": { "value": "esta semana", "synonyms": ["semana"] } },
+            { "name": { "value": "este mes", "synonyms": ["mes"] } },
+            { "name": { "value": "siempre", "synonyms": ["todo el tiempo", "general"] } }
+          ]
+        }
+      ]
+    },
+    "dialog": {
+      "intents": [
+        {
+          "name": "ConfirmarTomaIntent",
+          "confirmationRequired": true,
+          "prompts": {
+            "confirmation": "ConfirmarTomaConfirm"
+          },
+          "slots": [
+            {
+              "name": "medicamento",
+              "type": "MedicamentoSlotType",
+              "confirmationRequired": false,
+              "elicitationRequired": false,
+              "prompts": {
+                "elicitation": "ConfirmarTomaElicitMedicamento"
+              }
+            },
+            {
+              "name": "hora",
+              "type": "AMAZON.TIME",
+              "confirmationRequired": false,
+              "elicitationRequired": false,
+              "prompts": {}
+            }
+          ]
+        },
+        {
+          "name": "SosIntent",
+          "confirmationRequired": true,
+          "prompts": {
+            "confirmation": "SosConfirm"
+          },
+          "slots": [
+            {
+              "name": "sintoma",
+              "type": "SintomaSlotType",
+              "confirmationRequired": false,
+              "elicitationRequired": false,
+              "prompts": {}
+            }
+          ]
+        },
+        {
+          "name": "ConsultarTomasIntent",
+          "confirmationRequired": false,
+          "prompts": {},
+          "slots": [
+            {
+              "name": "medicamento",
+              "type": "MedicamentoSlotType",
+              "confirmationRequired": false,
+              "elicitationRequired": false,
+              "prompts": {}
+            },
+            {
+              "name": "hora",
+              "type": "AMAZON.TIME",
+              "confirmationRequired": false,
+              "elicitationRequired": false,
+              "prompts": {}
+            }
+          ]
+        }
+      ],
+      "delegationStrategy": "SKILL_RESPONSE"
+    },
+    "prompts": [
+      {
+        "id": "ConfirmarTomaElicitMedicamento",
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "¿Qué medicamento tomaste? Tienes pendiente {medicamento}."
+          },
+          {
+            "type": "PlainText",
+            "value": "¿Cuál medicina confirmas?"
+          }
+        ]
+      },
+      {
+        "id": "ConfirmarTomaConfirm",
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "¿Confirmas que tomaste {medicamento} de las {hora}?"
+          },
+          {
+            "type": "PlainText",
+            "value": "¿Confirmas que ya tomaste {medicamento}?"
+          }
+        ]
+      },
+      {
+        "id": "SosConfirm",
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "¿Seguro que necesitas ayuda de emergencia por {sintoma}? Diré a tu cuidador."
+          },
+          {
+            "type": "PlainText",
+            "value": "¿Confirmas la alerta de emergencia?"
+          }
+        ]
+      }
+    ]
+  }
+}
