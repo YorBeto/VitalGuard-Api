@@ -313,7 +313,7 @@ export class DevicesService {
     this.logger.log(`🔍 [TOMA_CONFIRMADA] Iniciando para dispositivo ${formattedCode}, patientId: ${device.patient_id}, dosisId: ${dosisId}, horario: ${horario}`);
 
     // 1. Obtener todos los treatments del paciente
-    const treatments = await this.prisma.treatments.findMany({
+    const treatments: any[] = await this.prisma.treatments.findMany({
       where: { patient_id: device.patient_id, deleted_at: null },
       select: {
         id: true,
@@ -323,7 +323,7 @@ export class DevicesService {
             schedules: {
               select: {
                 id: true,
-                scheduled_datetime: true,
+                time_of_day: true,
               },
             },
           },
@@ -345,7 +345,8 @@ export class DevicesService {
               if (dosisId && td.id === dosisId) {
                 // Verificar horario si se proporciona
                 if (horario) {
-                  const sTime = new Date(s.scheduled_datetime).toLocaleTimeString('es-MX', {
+                  // s.time_of_day viene como Date (con fecha de hoy)
+                  const sTime = s.time_of_day.toLocaleTimeString('es-MX', {
                     hour: '2-digit',
                     minute: '2-digit',
                     hour12: false,
